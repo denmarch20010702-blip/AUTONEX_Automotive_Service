@@ -9,7 +9,11 @@ Thumbs.db
 # Env / secrets
 .env
 .env.*
+!.env.example
 *.local
+
+# Входные материалы задания — не публикуем в репозитории
+/context/
 
 # Node
 node_modules/
