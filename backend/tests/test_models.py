@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -23,7 +24,7 @@ from app.models import (
 async def test_schema_roundtrip() -> None:
     async with async_session() as session:
         client = Client(email="test@example.com", name="Тест Тестов")
-        post = Post(name="Пост 1")
+        post = Post(name=f"Тестовый пост {uuid4().hex}")
         service = Service(name="Замена масла", duration_minutes=30, price=Decimal("1500.00"))
         session.add_all([client, post, service])
         await session.flush()
