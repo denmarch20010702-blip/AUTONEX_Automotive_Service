@@ -4,11 +4,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from app import models  # noqa: F401 — регистрирует модели в Base.metadata
 from app.core.config import settings
 from app.db.session import Base
-
-# импортировать модели здесь по мере их появления (шаг A2),
-# чтобы Base.metadata видел все таблицы для автогенерации миграций.
 
 config = context.config
 if config.config_file_name is not None:
