@@ -20,10 +20,16 @@
 
 ```
 MadDevProject/
-├── context/              входные материалы и анализ выбора кейса (уже существует)
-├── logs/                 SESSION_LOG.md, DECISIONS_LOG.md (уже существует)
-├── EXECUTION_PLAN.md     живой план работ с приоритетами A/B/C/D
-├── ARCHITECTURE.md       этот документ
+├── context/              входные материалы и анализ выбора кейса (не в git — см. .gitignore)
+├── buisness/             бизнес-требования и архитектура (эта папка)
+│   ├── buisness.md           концепция AUTONEX, автор — пользователь
+│   ├── ARCHITECTURE.md       этот документ
+│   └── BUSINESS_FEATURES_REVIEW.md   разбор фич из buisness.md
+├── logs/                 план и журналы работы
+│   ├── EXECUTION_PLAN.md     живой план работ с приоритетами A/B/C/D
+│   ├── SESSION_LOG.md
+│   └── DECISIONS_LOG.md
+├── VERIFICATION.md       как самостоятельно проверить состояние проекта
 ├── README.md             как развернуть, текущий статус
 ├── docker-compose.yml
 ├── backend/
@@ -89,4 +95,4 @@ MadDevProject/
 
 ## Готовность к A1
 
-Скелет репозитория (docker-compose, backend/frontend с health-check) создаётся следующим шагом и будет отмечен как выполненный в `EXECUTION_PLAN.md` (A1).
+Скелет репозитория (docker-compose, backend/frontend с health-check) создаётся следующим шагом и будет отмечен как выполненный в `../logs/EXECUTION_PLAN.md` (A1).
