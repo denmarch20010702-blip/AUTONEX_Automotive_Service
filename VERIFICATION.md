@@ -41,6 +41,47 @@ docker compose exec db psql -U station -d station -c "\d bookings"
 docker compose exec backend alembic history --verbose
 ```
 
+## Ручная проверка API (шаг A3: Клиент/Автомобиль/Каталог услуг)
+
+### Вариант 1 — Swagger UI в браузере (самый простой)
+
+Открой **`http://localhost:8000/docs`**. Там интерактивная документация по всем эндпоинтам (`/clients`, `/cars`, `/catalog`) — можно раскрыть любой, нажать "Try it out", ввести данные (включая кириллицу — в браузере проблем с кодировкой нет) и выполнить запрос прямо там же, увидеть код ответа и тело. Это самый надёжный способ, рекомендую начать с него.
+
+Альтернатива с тем же API, но в виде читаемой документации — `http://localhost:8000/redoc`.
+
+### Вариант 2 — PowerShell
+
+```powershell
+# Создать клиента
+$json = @{ email = "test@example.com"; name = "Test Client" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://localhost:8000/clients" -Method Post -Body $json -ContentType "application/json"
+
+# Список клиентов
+Invoke-RestMethod -Uri "http://localhost:8000/clients"
+
+# Получить/обновить/удалить конкретного (подставь id из ответа выше)
+Invoke-RestMethod -Uri "http://localhost:8000/clients/1"
+Invoke-RestMethod -Uri "http://localhost:8000/clients/1" -Method Patch -Body '{"name":"New Name"}' -ContentType "application/json"
+Invoke-RestMethod -Uri "http://localhost:8000/clients/1" -Method Delete
+```
+
+**Важный нюанс, если будешь вводить кириллицу прямо в PowerShell-консоли:** сама консоль Windows PowerShell 5.1 может **отображать** кириллический ответ как нечитаемую кашу (`Ð Ñ...`) — это проверено и это проблема отображения в консоли, а не данных. Реальные данные при этом долетают до БД и хранятся в корректном UTF-8 (я это отдельно проверил через `psql`, сравнив побайтово). Если видишь такую кашу в ответе — не паникуй, проверь то же самое через Swagger UI или напрямую в БД (ниже) прежде чем считать это багом.
+
+## Ручная проверка БД
+
+```bash
+# Список таблиц
+docker compose exec db psql -U station -d station -c "\dt"
+
+# Содержимое конкретной таблицы
+docker compose exec db psql -U station -d station -c "SELECT * FROM clients;"
+
+# Произвольный запрос
+docker compose exec db psql -U station -d station -c "SELECT c.name, a.make, a.model FROM cars a JOIN clients c ON c.id = a.client_id;"
+```
+
+Учётные данные (те же, что в `docker-compose.yml`): пользователь `station`, пароль `station`, база `station`, хост `localhost`, порт `5432` — этого достаточно, чтобы подключиться и любым GUI-клиентом (DBeaver, TablePlus, pgAdmin), если он уже стоит у тебя.
+
 ## Что это доказывает, а что — нет
 
 **Доказывает:** инфраструктура (A1/A9) и схема БД (A2/A2.1) рабочие, согласованные между собой и с моделями в коде, миграции обратимы.
