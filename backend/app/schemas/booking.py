@@ -8,7 +8,6 @@ from app.models.booking import BookingStatus
 
 
 class SlotOption(BaseModel):
-    post_id: int
     start_at: datetime
     end_at: datetime
 
@@ -16,9 +15,7 @@ class SlotOption(BaseModel):
 class BookingCreate(BaseModel):
     client_id: int
     car_id: int
-    post_id: int
     start_at: datetime
-    end_at: datetime
     service_ids: list[int]
 
 
