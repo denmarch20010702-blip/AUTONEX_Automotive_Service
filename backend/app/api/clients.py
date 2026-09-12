@@ -28,8 +28,13 @@ async def create_client(
 
 
 @router.get("", response_model=list[ClientRead])
-async def list_clients(session: AsyncSession = Depends(get_session)) -> list[Client]:
-    result = await session.execute(select(Client))
+async def list_clients(
+    email: str | None = None, session: AsyncSession = Depends(get_session)
+) -> list[Client]:
+    query = select(Client)
+    if email is not None:
+        query = query.where(Client.email == email)
+    result = await session.execute(query)
     return list(result.scalars().all())
 
 
@@ -65,4 +70,11 @@ async def delete_client(client_id: int, session: AsyncSession = Depends(get_sess
     if client is None:
         raise HTTPException(status_code=404, detail="Клиент не найден")
     await session.delete(client)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Нельзя удалить клиента — у него есть автомобили или заявки",
+        )

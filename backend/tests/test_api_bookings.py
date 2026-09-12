@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -46,6 +47,39 @@ async def delete_booking(booking_id: int) -> None:
         if booking is not None:
             await session.delete(booking)
             await session.commit()
+
+
+async def refund_revenue(amount) -> None:
+    # Тесты, доводящие заявку до "issued", необратимо прибавляют деньги в
+    # общий (не изолированный per-test) счётчик станции — иначе прогон
+    # автотестов постепенно "накручивал" бы реальную выручку на dev-БД.
+    # Возвращаем добавленное обратно в finally каждого такого теста.
+    from app.models import STATION_STATS_ROW_ID, StationStats
+    from sqlalchemy import update
+
+    async with async_session() as session:
+        await session.execute(
+            update(StationStats)
+            .where(StationStats.id == STATION_STATS_ROW_ID)
+            .values(total_revenue=StationStats.total_revenue - amount)
+        )
+        await session.commit()
+
+
+async def delete_archive_entry(original_booking_id: int) -> None:
+    # issued/cancelled теперь архивируют заявку вместо (или вместе с)
+    # удаления — тестовые записи в журнале тоже нужно убирать за собой,
+    # иначе BookingArchive будет бесконечно расти при каждом прогоне тестов.
+    from app.models import BookingArchive
+    from sqlalchemy import delete as sa_delete
+
+    async with async_session() as session:
+        await session.execute(
+            sa_delete(BookingArchive).where(
+                BookingArchive.original_booking_id == original_booking_id
+            )
+        )
+        await session.commit()
 
 
 async def cleanup(
@@ -590,7 +624,14 @@ async def test_status_happy_path_through_awaiting_approval(client: AsyncClient) 
             assert resp.status_code == 200, resp.json()
             assert resp.json()["status"] == target
     finally:
+        # "issued" архивирует заявку (удаляет из активной таблицы, кладёт в
+        # BookingArchive) и прибавляет её стоимость в общий счётчик станции —
+        # cleanup(booking_id=...) безопасен на уже удалённой заявке, а
+        # выручку и запись журнала убираем, чтобы прогон теста не оставлял
+        # следов в реальном dev-БД.
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)
 
 
 @pytest.mark.asyncio
@@ -604,6 +645,8 @@ async def test_status_happy_path_skipping_approval(client: AsyncClient) -> None:
             assert resp.json()["status"] == target
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)
 
 
 @pytest.mark.asyncio
@@ -625,6 +668,131 @@ async def test_status_invalid_transitions_rejected(client: AsyncClient) -> None:
         assert resp.status_code == 409  # повтор того же перехода
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_from_accepted_frees_the_slot(client: AsyncClient) -> None:
+    # B4, перенесено вперёд: клиент отменяет заявку прямо из "accepted" —
+    # слот должен тут же снова стать доступным (проверки занятости уже
+    # исключают CANCELLED, отдельного "освобождения" делать не нужно).
+    client_id, car_id, service_id, booking_id = await make_booking(client, 53)
+    original = (await client.get(f"/bookings/{booking_id}")).json()
+    rebooked_id = None
+    try:
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "cancelled"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelled"
+
+        # Отменённая заявка архивируется и убирается из активной таблицы —
+        # дальнейший запрос статуса получает 404, а не 409 (её физически
+        # больше нет в bookings, только в BookingArchive).
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "accepted"})
+        assert resp.status_code == 404
+
+        # Тот же автомобиль на то же самое время снова бронируется без
+        # конфликта — и car_is_free, и занятость поста уже игнорируют
+        # CANCELLED-заявки, отдельно "освобождать" ничего не пришлось.
+        resp = await client.post(
+            "/bookings",
+            json={
+                "client_id": client_id,
+                "car_id": car_id,
+                "start_at": original["start_at"],
+                "service_ids": [service_id],
+            },
+        )
+        assert resp.status_code == 201
+        rebooked_id = resp.json()["id"]
+    finally:
+        await cleanup(
+            client,
+            booking_ids=[booking_id] + ([rebooked_id] if rebooked_id else []),
+            car_id=car_id,
+            client_id=client_id,
+            service_id=service_id,
+        )
+        await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_allowed_from_on_post_and_awaiting_approval(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 54)
+    try:
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        resp = await client.post(
+            f"/bookings/{booking_id}/status", json={"status": "awaiting_approval"}
+        )
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "cancelled"})
+        assert resp.status_code == 200
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_not_allowed_from_issued(client: AsyncClient) -> None:
+    # "issued" — полное завершение заявки: она удаляется из БД по прямой
+    # просьбе пользователя (см. test_issued_deletes_booking_and_credits_revenue
+    # ниже), поэтому дальнейший запрос статуса получает 404, а не 409 —
+    # заявки для отмены уже физически не существует.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 55)
+    try:
+        for status in ("on_post", "ready", "issued"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
+            assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "cancelled"})
+        assert resp.status_code == 404
+    finally:
+        # booking_id уже архивирован/удалён самим переходом в issued —
+        # cleanup безопасен (delete_booking проверяет существование перед
+        # удалением). Переход в issued также прибавил 500.00 в общий
+        # счётчик станции и создал запись в журнале — возвращаем/убираем.
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
+async def test_issued_archives_booking_and_credits_revenue(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 56)
+    try:
+        stats_before = (await client.get("/station/stats")).json()
+
+        for status in ("on_post", "ready"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
+            assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "issued"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "issued"
+
+        # Полностью завершённая заявка исчезает из активной таблицы — не
+        # просто меняет статус.
+        resp = await client.get(f"/bookings/{booking_id}")
+        assert resp.status_code == 404
+
+        # ...но остаётся в журнале для просмотра при необходимости.
+        archive_resp = await client.get("/station/archive", params={"client_id": client_id})
+        assert archive_resp.status_code == 200
+        entries = archive_resp.json()
+        assert len(entries) == 1
+        assert entries[0]["original_booking_id"] == booking_id
+        assert entries[0]["status"] == "issued"
+        assert Decimal(entries[0]["total_price"]) == Decimal("500.00")
+        assert entries[0]["services_snapshot"][0]["name"].startswith("Услуга ")
+
+        stats_after = (await client.get("/station/stats")).json()
+        delta = Decimal(stats_after["total_revenue"]) - Decimal(stats_before["total_revenue"])
+        assert delta == Decimal("500.00")  # цена услуги из make_service()
+    finally:
+        await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
+        await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)
 
 
 @pytest.mark.asyncio

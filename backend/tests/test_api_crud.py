@@ -48,6 +48,23 @@ async def test_client_duplicate_email_conflict(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_client_by_email(client: AsyncClient) -> None:
+    email = unique_email()
+    resp = await client.post("/clients", json={"email": email, "name": "Найди Меня"})
+    client_id = resp.json()["id"]
+
+    resp = await client.get("/clients", params={"email": email})
+    assert resp.status_code == 200
+    assert [c["id"] for c in resp.json()] == [client_id]
+
+    resp = await client.get("/clients", params={"email": unique_email()})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+    await client.delete(f"/clients/{client_id}")
+
+
+@pytest.mark.asyncio
 async def test_get_nonexistent_client_returns_404(client: AsyncClient) -> None:
     resp = await client.get("/clients/999999999")
     assert resp.status_code == 404
@@ -79,6 +96,60 @@ async def test_car_crud(client: AsyncClient) -> None:
     assert resp.status_code == 204
 
     await client.delete(f"/clients/{client_id}")
+
+
+@pytest.mark.asyncio
+async def test_cannot_delete_car_or_client_with_active_booking(client: AsyncClient) -> None:
+    from datetime import date, timedelta
+
+    from app.db.session import async_session
+    from app.models import Booking
+
+    client_resp = await client.post(
+        "/clients", json={"email": unique_email(), "name": "С заявкой"}
+    )
+    client_id = client_resp.json()["id"]
+    car_resp = await client.post(
+        "/cars", json={"client_id": client_id, "make": "Kia", "model": "Rio"}
+    )
+    car_id = car_resp.json()["id"]
+    service_resp = await client.post(
+        "/catalog", json={"name": f"Услуга {uuid4().hex}", "duration_minutes": 20, "price": "300.00"}
+    )
+    service_id = service_resp.json()["id"]
+
+    day = date.today() + timedelta(days=60)
+    slot = (
+        await client.get(
+            "/bookings/available-slots",
+            params={"service_ids": [service_id], "date": day.isoformat()},
+        )
+    ).json()[0]
+    booking_resp = await client.post(
+        "/bookings",
+        json={
+            "client_id": client_id,
+            "car_id": car_id,
+            "start_at": slot["start_at"],
+            "service_ids": [service_id],
+        },
+    )
+    booking_id = booking_resp.json()["id"]
+
+    resp = await client.delete(f"/cars/{car_id}")
+    assert resp.status_code == 409
+
+    resp = await client.delete(f"/clients/{client_id}")
+    assert resp.status_code == 409
+
+    # Прибираем за собой напрямую — DELETE-эндпоинта для заявок нет (B4).
+    async with async_session() as session:
+        booking = await session.get(Booking, booking_id)
+        await session.delete(booking)
+        await session.commit()
+    await client.delete(f"/cars/{car_id}")
+    await client.delete(f"/clients/{client_id}")
+    await client.delete(f"/catalog/{service_id}")
 
 
 @pytest.mark.asyncio

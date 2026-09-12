@@ -2,14 +2,28 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+from decimal import Decimal
+
 from asyncpg.exceptions import DeadlockDetectedError
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.session import get_session
-from app.models import Booking, Car, Client, Post, Service
+from app.models import (
+    STATION_STATS_ROW_ID,
+    Booking,
+    BookingArchive,
+    BookingStatus,
+    Car,
+    Client,
+    Post,
+    Service,
+    StationStats,
+)
+from app.models.booking import booking_services
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, SlotOption
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
@@ -156,14 +170,23 @@ async def get_booking(booking_id: int, session: AsyncSession = Depends(get_sessi
 @router.post("/{booking_id}/status", response_model=BookingRead)
 async def update_booking_status(
     booking_id: int, data: BookingStatusUpdate, session: AsyncSession = Depends(get_session)
-) -> Booking:
+) -> BookingRead:
     # Блокируем строку заявки — та же техника, что уже дважды сработала в
     # A4 (пост, авто): два одновременных запроса сменить статус одной и той
     # же заявки встают в очередь на этой блокировке, а не гонятся друг с
     # другом. Второй запрос увидит уже обновлённый статус первого и получит
     # честный 409, если повторный/недопустимый переход.
     booking = (
-        await session.execute(select(Booking).where(Booking.id == booking_id).with_for_update())
+        await session.execute(
+            select(Booking)
+            .options(
+                selectinload(Booking.services),
+                selectinload(Booking.client),
+                selectinload(Booking.car),
+            )
+            .where(Booking.id == booking_id)
+            .with_for_update()
+        )
     ).scalar_one_or_none()
     if booking is None:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
@@ -175,7 +198,61 @@ async def update_booking_status(
         )
 
     booking.status = data.status
+    await session.flush()
+    # Снимок для ответа/события снимаем ДО удаления ниже — после удаления
+    # обращаться к атрибутам ORM-объекта уже нельзя.
+    snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
+
+    # Оба терминальных статуса (issued/cancelled) убирают заявку из
+    # активного списка — слот освобождается, как и раньше, но сама заявка
+    # не пропадает: переезжает в BookingArchive для просмотра при
+    # необходимости (по прямой просьбе пользователя, 2026-09-12). Выручка
+    # начисляется только за реально выполненную работу (issued), не за
+    # отменённую.
+    completing = data.status == BookingStatus.ISSUED
+    archiving = data.status in (BookingStatus.ISSUED, BookingStatus.CANCELLED)
+    if archiving:
+        total = sum((service.price for service in booking.services), start=Decimal("0"))
+        if completing:
+            await session.execute(
+                update(StationStats)
+                .where(StationStats.id == STATION_STATS_ROW_ID)
+                .values(total_revenue=StationStats.total_revenue + total)
+            )
+        session.add(
+            BookingArchive(
+                original_booking_id=booking.id,
+                client_id=booking.client_id,
+                client_name=booking.client.name,
+                client_email=booking.client.email,
+                car_id=booking.car_id,
+                car_make=booking.car.make,
+                car_model=booking.car.model,
+                post_id=booking.post_id,
+                start_at=booking.start_at,
+                end_at=booking.end_at,
+                status=booking.status,
+                total_price=total,
+                services_snapshot=[
+                    {
+                        "id": s.id,
+                        "name": s.name,
+                        "price": str(s.price),
+                        "duration_minutes": s.duration_minutes,
+                    }
+                    for s in booking.services
+                ],
+                created_at=booking.created_at,
+            )
+        )
+        await session.execute(
+            delete(booking_services).where(booking_services.c.booking_id == booking.id)
+        )
+        await session.delete(booking)
+
     await session.commit()
-    await session.refresh(booking)
-    publish("booking_status_changed", BookingRead.model_validate(booking).model_dump(mode="json"))
-    return booking
+
+    publish("booking_status_changed", snapshot)
+    if completing:
+        publish("booking_completed", snapshot)
+    return BookingRead(**snapshot)

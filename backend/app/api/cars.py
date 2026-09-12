@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
@@ -62,4 +63,10 @@ async def delete_car(car_id: int, session: AsyncSession = Depends(get_session)) 
     if car is None:
         raise HTTPException(status_code=404, detail="Автомобиль не найден")
     await session.delete(car)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Нельзя удалить автомобиль — на него есть заявки"
+        )

@@ -39,3 +39,15 @@ export function useBookingEvents(): BookingEvent[] {
 
   return events;
 }
+
+// Живой статус конкретной заявки — используется на клиентском экране
+// успеха, чтобы клиент видел, как его заявку обрабатывают на станции, без
+// перезагрузки страницы (buisness/UI_description.md: "такой же индикатор
+// и статус отслеживания заявки добавить клиенту").
+export function useBookingStatus(bookingId: number, initialStatus: string): string {
+  const events = useBookingEvents();
+  const latest = events.find(
+    (event) => event.type === "booking_status_changed" && event.data.id === bookingId,
+  );
+  return (latest?.data.status as string | undefined) ?? initialStatus;
+}
