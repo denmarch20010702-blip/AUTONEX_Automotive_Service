@@ -19,6 +19,10 @@ class BookingCreate(BaseModel):
     service_ids: list[int]
 
 
+class BookingStatusUpdate(BaseModel):
+    status: BookingStatus
+
+
 class BookingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.models import Booking, Car, Client, Post, Service
-from app.schemas.booking import BookingCreate, BookingRead, SlotOption
+from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, SlotOption
+from app.services.booking_status import is_transition_allowed
 from app.services.slots import (
     car_is_free,
     get_available_slots,
@@ -147,4 +148,31 @@ async def get_booking(booking_id: int, session: AsyncSession = Depends(get_sessi
     booking = await session.get(Booking, booking_id)
     if booking is None:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    return booking
+
+
+@router.post("/{booking_id}/status", response_model=BookingRead)
+async def update_booking_status(
+    booking_id: int, data: BookingStatusUpdate, session: AsyncSession = Depends(get_session)
+) -> Booking:
+    # Блокируем строку заявки — та же техника, что уже дважды сработала в
+    # A4 (пост, авто): два одновременных запроса сменить статус одной и той
+    # же заявки встают в очередь на этой блокировке, а не гонятся друг с
+    # другом. Второй запрос увидит уже обновлённый статус первого и получит
+    # честный 409, если повторный/недопустимый переход.
+    booking = (
+        await session.execute(select(Booking).where(Booking.id == booking_id).with_for_update())
+    ).scalar_one_or_none()
+    if booking is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    if not is_transition_allowed(booking.status, data.status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Нельзя перейти из статуса '{booking.status.value}' в '{data.status.value}'",
+        )
+
+    booking.status = data.status
+    await session.commit()
+    await session.refresh(booking)
     return booking

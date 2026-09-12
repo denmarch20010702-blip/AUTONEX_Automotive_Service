@@ -556,3 +556,98 @@ async def test_booking_with_empty_service_ids_rejected(client: AsyncClient) -> N
         assert resp.status_code == 422
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id)
+
+
+async def make_booking(client: AsyncClient, days_offset: int) -> tuple[int, int, int, int]:
+    client_id, car_id = await make_client_car(client)
+    service_id = await make_service(client, duration_minutes=30)
+    day = date.today() + timedelta(days=days_offset)
+    slot = (
+        await client.get(
+            "/bookings/available-slots",
+            params={"service_ids": [service_id], "date": day.isoformat()},
+        )
+    ).json()[0]
+    resp = await client.post(
+        "/bookings",
+        json={
+            "client_id": client_id,
+            "car_id": car_id,
+            "start_at": slot["start_at"],
+            "service_ids": [service_id],
+        },
+    )
+    assert resp.status_code == 201
+    return client_id, car_id, service_id, resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_status_happy_path_through_awaiting_approval(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 50)
+    try:
+        for target in ("on_post", "awaiting_approval", "ready", "issued"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": target})
+            assert resp.status_code == 200, resp.json()
+            assert resp.json()["status"] == target
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_status_happy_path_skipping_approval(client: AsyncClient) -> None:
+    # awaiting_approval — развилка, а не обязательная стадия.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 51)
+    try:
+        for target in ("on_post", "ready", "issued"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": target})
+            assert resp.status_code == 200
+            assert resp.json()["status"] == target
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_status_invalid_transitions_rejected(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 52)
+    try:
+        # Пропуск стадии: accepted -> ready напрямую.
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "ready"})
+        assert resp.status_code == 409
+
+        # Переводим в on_post легитимно, затем пробуем откатить назад и повторить.
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "accepted"})
+        assert resp.status_code == 409  # откат назад
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 409  # повтор того же перехода
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_status_nonexistent_booking_returns_404(client: AsyncClient) -> None:
+    resp = await client.post("/bookings/999999999/status", json={"status": "on_post"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_status_concurrent_same_transition_only_one_succeeds(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 53)
+    try:
+        responses = await asyncio.gather(
+            client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"}),
+            client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"}),
+        )
+        codes = [r.status_code for r in responses]
+        print(f"\nДва одновременных перехода accepted->on_post -> статусы: {codes}")
+        for i, r in enumerate(responses, start=1):
+            print(f"  запрос {i}: {r.status_code} {r.json()}")
+        assert sorted(codes) == [200, 409]  # применился ровно один переход
+
+        final = await client.get(f"/bookings/{booking_id}")
+        assert final.json()["status"] == "on_post"  # не откатилось и не сломалось
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)

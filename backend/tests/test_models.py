@@ -23,9 +23,11 @@ from app.models import (
 @pytest.mark.asyncio
 async def test_schema_roundtrip() -> None:
     async with async_session() as session:
-        client = Client(email="test@example.com", name="Тест Тестов")
+        client = Client(email=f"{uuid4().hex}@example.com", name="Тест Тестов")
         post = Post(name=f"Тестовый пост {uuid4().hex}")
-        service = Service(name="Замена масла", duration_minutes=30, price=Decimal("1500.00"))
+        service = Service(
+            name=f"Тестовая услуга {uuid4().hex}", duration_minutes=30, price=Decimal("1500.00")
+        )
         session.add_all([client, post, service])
         await session.flush()
 
