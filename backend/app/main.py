@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import bookings, cars, catalog, clients, health
+from app.api import bookings, cars, catalog, clients, events, health
 
 app = FastAPI(title="Станция техобслуживания")
 
@@ -17,3 +17,4 @@ app.include_router(clients.router)
 app.include_router(cars.router)
 app.include_router(catalog.router)
 app.include_router(bookings.router)
+app.include_router(events.router)

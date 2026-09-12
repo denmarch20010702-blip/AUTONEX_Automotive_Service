@@ -12,6 +12,7 @@ from app.db.session import get_session
 from app.models import Booking, Car, Client, Post, Service
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, SlotOption
 from app.services.booking_status import is_transition_allowed
+from app.services.events import publish
 from app.services.slots import (
     car_is_free,
     get_available_slots,
@@ -129,6 +130,7 @@ async def create_booking(
             raise HTTPException(status_code=409, detail="Слот уже занят")
         raise
     await session.refresh(booking)
+    publish("booking_created", BookingRead.model_validate(booking).model_dump(mode="json"))
     return booking
 
 
@@ -175,4 +177,5 @@ async def update_booking_status(
     booking.status = data.status
     await session.commit()
     await session.refresh(booking)
+    publish("booking_status_changed", BookingRead.model_validate(booking).model_dump(mode="json"))
     return booking
