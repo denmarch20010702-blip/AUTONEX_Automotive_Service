@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,11 +70,22 @@ async def car_is_free(
 
 
 async def get_available_slots(
-    session: AsyncSession, service_ids: list[int], day: date
+    session: AsyncSession, service_ids: list[int], window_start: datetime
 ) -> list[dict]:
     """Клиенту не важно, на каком посту его обслужат — здесь отдаются только
     моменты времени, свободные хотя бы на одном посту. Конкретный пост
     подбирается автоматически при создании заявки (см. app/api/bookings.py).
+
+    `window_start` — это не абстрактная календарная дата, а конкретный UTC-
+    момент начала "суток", которые показываются клиенту. Считать его на
+    backend'е бессмысленно: у backend'а нет и не должно быть представления о
+    часовом поясе клиента, а один и тот же календарный день в UTC и на
+    устройстве клиента — разные интервалы времени при ненулевом смещении
+    (обнаружено на практике 2026-09-13: вечер и вся ночь "сегодня" пропадали
+    из выдачи для пояса UTC-3, потому что физически лежали в UTC-дате
+    "завтра"). Поэтому именно клиент решает, что для него "сегодня в 00:00",
+    и передаёт этот момент как есть — backend лишь считает окно [window_start,
+    window_start + 24ч) в этих координатах.
 
     Услуга может быть длиннее суток — тогда и конец интервала, и окно поиска
     конфликтующих заявок должны выходить за пределы запрошенного дня; сутки
@@ -85,7 +96,7 @@ async def get_available_slots(
 
     posts = (await session.execute(select(Post))).scalars().all()
 
-    day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    day_start = window_start.astimezone(timezone.utc)
     day_end = day_start + timedelta(days=1)
     now = datetime.now(timezone.utc)
 

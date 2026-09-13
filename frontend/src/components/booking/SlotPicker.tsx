@@ -24,6 +24,19 @@ export function formatSlotLabel(iso: string): string {
   return `${dd}.${mm}.${d.getFullYear()} - ${hh}:${min}`;
 }
 
+// Сдвиг "YYYY-MM-DD" на N дней в локальном календаре устройства — через
+// компоненты даты, а не парсинг строки как UTC (та же ловушка JS, что уже
+// чинили в getAvailableSlots/todayIso, см. api/client.ts).
+function shiftDate(dateStr: string, deltaDays: number): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const d = new Date(year, month - 1, day);
+  d.setDate(d.getDate() + deltaDays);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
 export function SlotPicker({
   date,
   onDateChange,
@@ -41,14 +54,42 @@ export function SlotPicker({
 }) {
   return (
     <div>
-      <div className="form-field" style={{ maxWidth: 220, margin: "0 auto 1.5rem" }}>
-        <label htmlFor="slot-date">Дата</label>
-        <input
-          id="slot-date"
-          type="date"
-          value={date}
-          onChange={(event) => onDateChange(event.target.value)}
-        />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "1rem",
+          margin: "0 auto 1.5rem",
+        }}
+      >
+        <button
+          type="button"
+          className="date-nav-arrow"
+          aria-label="Предыдущий день"
+          onClick={() => onDateChange(shiftDate(date, -1))}
+        >
+          ‹
+        </button>
+
+        <div className="form-field" style={{ maxWidth: 180 }}>
+          <label htmlFor="slot-date">Дата</label>
+          <input
+            id="slot-date"
+            type="date"
+            value={date}
+            onChange={(event) => onDateChange(event.target.value)}
+          />
+        </div>
+
+        <button
+          type="button"
+          className="date-nav-arrow"
+          aria-label="Следующий день"
+          onClick={() => onDateChange(shiftDate(date, 1))}
+        >
+          ›
+        </button>
       </div>
 
       {loading && <p style={{ textAlign: "center" }}>Загрузка слотов...</p>}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from decimal import Decimal
 
@@ -41,10 +41,17 @@ router = APIRouter(prefix="/bookings", tags=["bookings"])
 @router.get("/available-slots", response_model=list[SlotOption])
 async def available_slots(
     service_ids: list[int] = Query(...),
-    on: date = Query(..., alias="date"),
+    # Точный момент начала "суток", которые хочет видеть клиент (обязательно
+    # со смещением часового пояса в строке) — не календарная дата без
+    # контекста. См. подробное объяснение в services/slots.py: интерпретация
+    # голой даты как UTC-суток рвёт выдачу слотов на границах часового пояса
+    # клиента (обнаружено на практике 2026-09-13).
+    day_start: datetime = Query(..., alias="date"),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    return await get_available_slots(session, service_ids, on)
+    if day_start.tzinfo is None:
+        raise HTTPException(status_code=422, detail="date должен содержать часовой пояс")
+    return await get_available_slots(session, service_ids, day_start)
 
 
 @router.post("", response_model=BookingRead, status_code=201)

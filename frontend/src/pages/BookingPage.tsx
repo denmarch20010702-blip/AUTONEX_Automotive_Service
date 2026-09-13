@@ -22,7 +22,15 @@ import { useClientSession } from "../session/ClientSessionContext";
 type Step = "services" | "slots" | "identify" | "car" | "add-car" | "success";
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Локальная дата устройства, не UTC — `.toISOString()` даёт UTC-дату,
+  // которая может отличаться от локальной "сегодня" вечером/ночью при
+  // ненулевом смещении часового пояса (тот же класс бага, что и в
+  // getAvailableSlots — см. api/client.ts).
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 // Мастер записи по шагам из buisness/UI_description.md: услуги → слот →

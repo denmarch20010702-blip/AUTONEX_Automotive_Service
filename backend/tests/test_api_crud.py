@@ -100,7 +100,7 @@ async def test_car_crud(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_cannot_delete_car_or_client_with_active_booking(client: AsyncClient) -> None:
-    from datetime import date, timedelta
+    from datetime import date, datetime, timedelta, timezone
 
     from app.db.session import async_session
     from app.models import Booking
@@ -122,7 +122,13 @@ async def test_cannot_delete_car_or_client_with_active_booking(client: AsyncClie
     slot = (
         await client.get(
             "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day.isoformat()},
+            # available-slots?date= теперь ждёт момент времени со смещением
+            # часового пояса, не голую дату (см. day_start_iso в
+            # test_api_bookings.py) — тестам сам пояс не важен, берём UTC.
+            params={
+                "service_ids": [service_id],
+                "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat(),
+            },
         )
     ).json()[0]
     booking_resp = await client.post(

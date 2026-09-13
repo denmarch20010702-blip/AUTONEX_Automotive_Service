@@ -76,10 +76,24 @@ export function listBookings(clientId?: number): Promise<Booking[]> {
   return request<Booking[]>(clientId ? `/bookings?client_id=${clientId}` : "/bookings");
 }
 
+// `date` — обычная "YYYY-MM-DD" строка из <input type="date"> (её собственный
+// календарь всегда локальный для устройства). backend'у нужен не календарный
+// день сам по себе, а точный момент начала этих суток в часовом поясе
+// устройства — иначе интерпретация как UTC-суток на backend'е отрезает
+// вечер/ночь при ненулевом смещении (обнаружено на практике 2026-09-13,
+// см. backend/app/services/slots.py). new Date("YYYY-MM-DD") трактовал бы
+// строку как UTC-полночь (классическая ловушка JS) — поэтому раскладываем
+// на компоненты и строим локальную полночь через многоаргументный
+// конструктор Date, который как раз использует часовой пояс устройства.
+function localMidnightIso(dateStr: string): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(year, month - 1, day, 0, 0, 0, 0).toISOString();
+}
+
 export function getAvailableSlots(serviceIds: number[], date: string): Promise<SlotOption[]> {
   const params = new URLSearchParams();
   serviceIds.forEach((id) => params.append("service_ids", String(id)));
-  params.set("date", date);
+  params.set("date", localMidnightIso(date));
   return request<SlotOption[]>(`/bookings/available-slots?${params.toString()}`);
 }
 

@@ -14,6 +14,15 @@ def unique_email() -> str:
     return f"{uuid4().hex}@example.com"
 
 
+def day_start_iso(day: date) -> str:
+    # `/bookings/available-slots?date=` теперь ждёт точный момент со
+    # смещением часового пояса, а не голую календарную дату — иначе backend
+    # не может понять, что для клиента значит "начало суток" (обнаружено на
+    # практике 2026-09-13: UTC-интерпретация рвала выдачу слотов на границе
+    # часовых поясов). Тестам сам часовой пояс не важен — берём UTC.
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
+
+
 async def make_client_car(client: AsyncClient) -> tuple[int, int]:
     client_resp = await client.post(
         "/clients", json={"email": unique_email(), "name": "Booking Tester"}
@@ -112,7 +121,7 @@ async def test_available_slots_returns_times_without_post_id(client: AsyncClient
     try:
         resp = await client.get(
             "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day.isoformat()},
+            params={"service_ids": [service_id], "date": day_start_iso(day)},
         )
         assert resp.status_code == 200
         slots = resp.json()
@@ -132,7 +141,7 @@ async def test_booking_auto_assigns_a_post(client: AsyncClient) -> None:
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()[0]
 
@@ -216,7 +225,7 @@ async def test_same_car_cannot_be_booked_twice_at_overlapping_time(client: Async
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()[0]
         payload = {
@@ -247,7 +256,7 @@ async def test_concurrent_bookings_same_car_only_one_succeeds(client: AsyncClien
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()[0]
         payload = {
@@ -284,7 +293,7 @@ async def test_slot_disappears_only_once_all_posts_booked_then_409(client: Async
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()[0]
 
@@ -310,7 +319,7 @@ async def test_slot_disappears_only_once_all_posts_booked_then_409(client: Async
 
         slots_after = await client.get(
             "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day.isoformat()},
+            params={"service_ids": [service_id], "date": day_start_iso(day)},
         )
         assert slot not in slots_after.json()
 
@@ -350,7 +359,7 @@ async def test_concurrent_bookings_on_same_slot_exactly_three_succeed(client: As
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()[0]
 
@@ -399,7 +408,7 @@ async def test_slots_available_right_up_to_midnight(client: AsyncClient) -> None
     try:
         resp = await client.get(
             "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day.isoformat()},
+            params={"service_ids": [service_id], "date": day_start_iso(day)},
         )
         starts = {s["start_at"] for s in resp.json()}
         assert f"{day.isoformat()}T23:15:00Z" in starts
@@ -419,7 +428,7 @@ async def test_service_longer_than_a_day_is_bookable(client: AsyncClient) -> Non
         slots = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()
         assert len(slots) > 0
@@ -495,7 +504,7 @@ async def test_cannot_book_someone_elses_car(client: AsyncClient) -> None:
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()[0]
 
@@ -549,7 +558,7 @@ async def test_same_car_two_non_overlapping_times_both_succeed(client: AsyncClie
         slots = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
             )
         ).json()
         first_slot, second_slot = slots[0], slots[-1]
@@ -599,7 +608,7 @@ async def make_booking(client: AsyncClient, days_offset: int) -> tuple[int, int,
     slot = (
         await client.get(
             "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day.isoformat()},
+            params={"service_ids": [service_id], "date": day_start_iso(day)},
         )
     ).json()[0]
     resp = await client.post(

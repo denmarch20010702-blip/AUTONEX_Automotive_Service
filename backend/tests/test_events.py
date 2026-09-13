@@ -13,7 +13,7 @@
 
 import asyncio
 import contextlib
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -80,7 +80,7 @@ async def test_create_booking_publishes_booking_created(client: AsyncClient) -> 
         slot = (
             await client.get(
                 "/bookings/available-slots",
-                params={"service_ids": [service_id], "date": day.isoformat()},
+                params={"service_ids": [service_id], "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()},
             )
         ).json()[0]
 
@@ -114,7 +114,7 @@ async def test_status_change_publishes_booking_status_changed(client: AsyncClien
     slot = (
         await client.get(
             "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day.isoformat()},
+            params={"service_ids": [service_id], "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()},
         )
     ).json()[0]
     create_resp = await client.post(
