@@ -68,6 +68,13 @@ export function deleteService(id: number): Promise<void> {
   return request<void>(`/catalog/${id}`, { method: "DELETE" });
 }
 
+export function updateService(
+  id: number,
+  payload: Partial<{ name: string; duration_minutes: number; price: number }>,
+): Promise<Service> {
+  return request<Service>(`/catalog/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
 export function listAllCars(): Promise<CarInfo[]> {
   return request<CarInfo[]>("/cars");
 }
@@ -136,6 +143,7 @@ export interface ArchivedBooking {
   status: string;
   total_price: string;
   services_snapshot: Array<{ id: number; name: string; price: string; duration_minutes: number }>;
+  additional_works_snapshot: Array<{ id: number; description: string; price: string; proposed_by: string; status: string }>;
   created_at: string;
   archived_at: string;
 }
@@ -162,6 +170,10 @@ export function getClient(id: number): Promise<ClientInfo> {
   return request<ClientInfo>(`/clients/${id}`);
 }
 
+export function listAllClients(): Promise<ClientInfo[]> {
+  return request<ClientInfo[]>("/clients");
+}
+
 export function listCars(clientId: number): Promise<CarInfo[]> {
   return request<CarInfo[]>(`/cars?client_id=${clientId}`);
 }
@@ -185,4 +197,63 @@ export function updateCar(
 
 export function deleteCar(id: number): Promise<void> {
   return request<void>(`/cars/${id}`, { method: "DELETE" });
+}
+
+export interface TireSet {
+  id: number;
+  client_id: number;
+  car_id: number;
+  stored_at: string;
+  issued_at: string | null;
+}
+
+// Хранение шин (B1) — issued_at === null означает "на хранении сейчас".
+export function listTireSets(params: { clientId?: number; carId?: number; activeOnly?: boolean }): Promise<TireSet[]> {
+  const query = new URLSearchParams();
+  if (params.clientId !== undefined) query.set("client_id", String(params.clientId));
+  if (params.carId !== undefined) query.set("car_id", String(params.carId));
+  if (params.activeOnly) query.set("active_only", "true");
+  return request<TireSet[]>(`/tire-sets?${query.toString()}`);
+}
+
+export function storeTireSet(payload: { client_id: number; car_id: number }): Promise<TireSet> {
+  return request<TireSet>("/tire-sets", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function issueTireSet(id: number): Promise<TireSet> {
+  return request<TireSet>(`/tire-sets/${id}/issue`, { method: "POST" });
+}
+
+export interface AdditionalWork {
+  id: number;
+  booking_id: number;
+  description: string;
+  price: string;
+  proposed_by: "mechanic" | "ai";
+  status: "pending" | "approved" | "declined";
+  created_at: string;
+}
+
+// Согласование доп. работ (B2) — предлагается сразу при обнаружении;
+// сама доп. работа не начинается без ответа клиента, но статус заявки
+// (A5) этим не блокируется — станция может продолжать уже согласованное.
+export function listAdditionalWorks(bookingId: number): Promise<AdditionalWork[]> {
+  return request<AdditionalWork[]>(`/bookings/${bookingId}/additional-works`);
+}
+
+export function proposeAdditionalWork(
+  bookingId: number,
+  payload: { description: string; price: number },
+): Promise<AdditionalWork> {
+  return request<AdditionalWork>(`/bookings/${bookingId}/additional-works`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function respondAdditionalWork(id: number, status: "approved" | "declined"): Promise<AdditionalWork> {
+  return request<AdditionalWork>(`/additional-works/${id}/respond`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  });
 }

@@ -14,6 +14,8 @@ from sqlalchemy.orm import selectinload
 from app.db.session import get_session
 from app.models import (
     STATION_STATS_ROW_ID,
+    AdditionalWork,
+    AdditionalWorkStatus,
     Booking,
     BookingArchive,
     BookingStatus,
@@ -27,6 +29,7 @@ from app.models.booking import booking_services
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, SlotOption
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
+from app.services.robot_timer import schedule_auto_advance
 from app.services.slots import (
     car_is_free,
     get_available_slots,
@@ -204,6 +207,26 @@ async def update_booking_status(
             detail=f"Нельзя перейти из статуса '{booking.status.value}' в '{data.status.value}'",
         )
 
+    # Заметка пользователя (B2, уточнение 2026-09-13): пока клиент не принял
+    # или не отклонил предложенную доп. работу, статус заявки дальше не
+    # меняется — кроме отмены самой заявки, её разрешаем в любой момент.
+    if data.status != BookingStatus.CANCELLED:
+        has_pending = (
+            await session.execute(
+                select(AdditionalWork.id)
+                .where(
+                    AdditionalWork.booking_id == booking.id,
+                    AdditionalWork.status == AdditionalWorkStatus.PENDING,
+                )
+                .limit(1)
+            )
+        ).first()
+        if has_pending is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Есть неотвеченное предложение доп. работы — статус не меняется, пока клиент не ответит",
+            )
+
     booking.status = data.status
     await session.flush()
     # Снимок для ответа/события снимаем ДО удаления ниже — после удаления
@@ -220,6 +243,28 @@ async def update_booking_status(
     archiving = data.status in (BookingStatus.ISSUED, BookingStatus.CANCELLED)
     if archiving:
         total = sum((service.price for service in booking.services), start=Decimal("0"))
+
+        # additional_works имеет FK на bookings без каскада — без явного
+        # удаления его строк здесь DELETE FROM bookings падал с
+        # IntegrityError (500), если у заявки было хоть одно предложение
+        # доп. работы (найдено на практике 2026-09-13). Сохраняем снимком в
+        # архив по той же логике, что и services_snapshot, а не молча теряем.
+        additional_works = (
+            await session.execute(
+                select(AdditionalWork).where(AdditionalWork.booking_id == booking.id)
+            )
+        ).scalars().all()
+        additional_works_snapshot = [
+            {
+                "id": w.id,
+                "description": w.description,
+                "price": str(w.price),
+                "proposed_by": w.proposed_by.value,
+                "status": w.status.value,
+            }
+            for w in additional_works
+        ]
+
         if completing:
             await session.execute(
                 update(StationStats)
@@ -249,12 +294,14 @@ async def update_booking_status(
                     }
                     for s in booking.services
                 ],
+                additional_works_snapshot=additional_works_snapshot,
                 created_at=booking.created_at,
             )
         )
         await session.execute(
             delete(booking_services).where(booking_services.c.booking_id == booking.id)
         )
+        await session.execute(delete(AdditionalWork).where(AdditionalWork.booking_id == booking.id))
         await session.delete(booking)
 
     await session.commit()
@@ -262,4 +309,12 @@ async def update_booking_status(
     publish("booking_status_changed", snapshot)
     if completing:
         publish("booking_completed", snapshot)
+
+    # Заметка пользователя: после приёма машины на пост обслуживание должно
+    # само пойти по таймеру — длительность = сумма длительностей выбранных
+    # услуг. Пилотная часть C2 (без очереди/симуляции сбоев).
+    if data.status == BookingStatus.ON_POST:
+        total_minutes = sum(s.duration_minutes for s in booking.services)
+        schedule_auto_advance(booking.id, timedelta(minutes=total_minutes))
+
     return BookingRead(**snapshot)

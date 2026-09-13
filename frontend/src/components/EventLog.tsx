@@ -3,6 +3,8 @@ import type { BookingEvent } from "../api/events";
 const LABELS: Record<BookingEvent["type"], string> = {
   booking_created: "Новая заявка",
   booking_status_changed: "Статус изменился",
+  additional_work_proposed: "Предложена доп. работа",
+  additional_work_responded: "Ответ по доп. работе",
 };
 
 export function EventLog({ events }: { events: BookingEvent[] }) {
@@ -23,7 +25,8 @@ export function EventLog({ events }: { events: BookingEvent[] }) {
         <ul>
           {events.map((event, index) => (
             <li key={index}>
-              <code>{event.receivedAt}</code> — {LABELS[event.type]}: заявка #
+              <code>{event.receivedAt}</code> — {LABELS[event.type]}:{" "}
+              {event.type.startsWith("additional_work") ? "доп. работа" : "заявка"} #
               {String(event.data.id)}, статус <b>{String(event.data.status)}</b>
             </li>
           ))}

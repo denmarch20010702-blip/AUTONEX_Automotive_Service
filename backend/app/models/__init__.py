@@ -3,6 +3,7 @@ from app.models.booking import Booking, BookingStatus, booking_services
 from app.models.booking_archive import BookingArchive
 from app.models.car import Car
 from app.models.client import Client
+from app.models.outbox_email import OutboxEmail
 from app.models.post import Post
 from app.models.service import Service
 from app.models.station_stats import STATION_STATS_ROW_ID, StationStats
@@ -18,6 +19,7 @@ __all__ = [
     "booking_services",
     "Car",
     "Client",
+    "OutboxEmail",
     "Post",
     "Service",
     "StationStats",

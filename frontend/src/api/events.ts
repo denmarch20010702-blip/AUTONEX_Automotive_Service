@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { API_URL } from "./client";
 
 export interface BookingEvent {
-  type: "booking_created" | "booking_status_changed";
+  type: "booking_created" | "booking_status_changed" | "additional_work_proposed" | "additional_work_responded";
   data: Record<string, unknown>;
   receivedAt: string;
 }
@@ -33,6 +33,8 @@ export function useBookingEvents(): BookingEvent[] {
 
     source.addEventListener("booking_created", handle("booking_created"));
     source.addEventListener("booking_status_changed", handle("booking_status_changed"));
+    source.addEventListener("additional_work_proposed", handle("additional_work_proposed"));
+    source.addEventListener("additional_work_responded", handle("additional_work_responded"));
 
     return () => source.close();
   }, []);

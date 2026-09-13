@@ -25,5 +25,6 @@ class BookingArchiveRead(BaseModel):
     status: BookingStatus
     total_price: Decimal
     services_snapshot: list[dict]
+    additional_works_snapshot: list[dict]
     created_at: datetime
     archived_at: datetime

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import DateTime, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -14,6 +14,17 @@ class TireSet(Base):
     (issued_at IS NULL означает "на хранении"; бизнес-правило — в сервисном слое B1)."""
 
     __tablename__ = "tire_sets"
+    __table_args__ = (
+        # Не более одного активного (ещё не выданного) комплекта на машину —
+        # тот же принцип, что EXCLUDE-ограничения в A4: правило на уровне БД
+        # надёжнее проверки в коде под конкурентной нагрузкой.
+        Index(
+            "ix_tire_sets_one_active_per_car",
+            "car_id",
+            unique=True,
+            postgresql_where=text("issued_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)

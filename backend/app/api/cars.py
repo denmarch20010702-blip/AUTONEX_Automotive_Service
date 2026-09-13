@@ -68,5 +68,6 @@ async def delete_car(car_id: int, session: AsyncSession = Depends(get_session)) 
     except IntegrityError:
         await session.rollback()
         raise HTTPException(
-            status_code=409, detail="Нельзя удалить автомобиль — на него есть заявки"
+            status_code=409,
+            detail="Нельзя удалить автомобиль — на него есть заявки или комплект шин на хранении",
         )

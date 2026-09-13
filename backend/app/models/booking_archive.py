@@ -38,6 +38,11 @@ class BookingArchive(Base):
     status: Mapped[BookingStatus] = mapped_column(Enum(BookingStatus, name="booking_status"))
     total_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     services_snapshot: Mapped[list] = mapped_column(JSON)
+    # Предложенные доп. работы (B2) — снимком, той же логикой, что и услуги:
+    # заявка удаляется из активной таблицы вместе со своими additional_works
+    # (иначе внешний ключ не даёт удалить строку — найдено на практике
+    # 2026-09-13, было падением 500), поэтому историю сохраняем здесь.
+    additional_works_snapshot: Mapped[list] = mapped_column(JSON, default=list)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     archived_at: Mapped[datetime] = mapped_column(

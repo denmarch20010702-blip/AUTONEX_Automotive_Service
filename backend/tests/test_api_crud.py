@@ -48,6 +48,29 @@ async def test_client_duplicate_email_conflict(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_email_is_case_insensitive(client: AsyncClient) -> None:
+    # Найдено вручную 2026-09-13: "Test@Example.com" и "test@example.com"
+    # считались разными клиентами — можно было случайно завести дубликат
+    # аккаунта с той же почтой в другом регистре.
+    email = unique_email()
+    mixed_case = email.upper()
+
+    resp1 = await client.post("/clients", json={"email": mixed_case, "name": "A"})
+    assert resp1.status_code == 201
+    client_id = resp1.json()["id"]
+    assert resp1.json()["email"] == email  # сохранено нормализованным
+
+    resp2 = await client.post("/clients", json={"email": email, "name": "B"})
+    assert resp2.status_code == 409
+
+    found = await client.get("/clients", params={"email": mixed_case})
+    assert found.status_code == 200
+    assert [c["id"] for c in found.json()] == [client_id]
+
+    await client.delete(f"/clients/{client_id}")
+
+
+@pytest.mark.asyncio
 async def test_find_client_by_email(client: AsyncClient) -> None:
     email = unique_email()
     resp = await client.post("/clients", json={"email": email, "name": "Найди Меня"})

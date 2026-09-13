@@ -828,3 +828,72 @@ async def test_status_concurrent_same_transition_only_one_succeeds(client: Async
         assert final.json()["status"] == "on_post"  # не откатилось и не сломалось
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cancel_vs_advance_never_corrupts_state(client: AsyncClient) -> None:
+    # B8: "гонка при одновременном переносе/отмене". Клиент отменяет, станция
+    # одновременно продвигает on_post -> ready. Оба перехода по отдельности
+    # легитимны (ready тоже допускает cancelled), поэтому здесь НЕТ единого
+    # правильного исхода — итог зависит от того, чья транзакция закоммитится
+    # первой (обнаружено на практике 2026-09-13, воспроизводится не всегда).
+    # Инвариант, который должен держаться всегда: ни одного 500/неожиданного
+    # кода, и заявка в итоге архивируется ровно один раз со статусом, который
+    # реально был последним применённым переходом.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 57)
+    try:
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        cancel_resp, ready_resp = await asyncio.gather(
+            client.post(f"/bookings/{booking_id}/status", json={"status": "cancelled"}),
+            client.post(f"/bookings/{booking_id}/status", json={"status": "ready"}),
+        )
+        codes = sorted([cancel_resp.status_code, ready_resp.status_code])
+        # Либо отмена прошла первой (второй запрос находит заявку уже
+        # архивированной -> 404), либо ready прошёл первой, а отмена —
+        # вторым легитимным переходом уже из ready (оба 200).
+        assert codes in ([200, 404], [200, 200])
+
+        archive = await client.get("/station/archive", params={"client_id": client_id})
+        entries = archive.json()
+        assert len(entries) == 1  # заархивирована ровно один раз, не дважды
+        # Финальный статус в архиве всегда совпадает с тем запросом, который
+        # реально закоммитился последним (то есть вернул 200 последним по
+        # порядку выполнения на сервере) — здесь просто проверяем, что это
+        # один из двух ожидаемых статусов, без падения/рассинхрона.
+        assert entries[0]["status"] in ("cancelled", "ready")
+    finally:
+        # Ни cancelled, ни ready не начисляют выручку — refund_revenue не нужен.
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_double_issue_credits_revenue_exactly_once(client: AsyncClient) -> None:
+    # B8: двойной клик "Выдать" на станции не должен задвоить выручку —
+    # FOR UPDATE должен сериализовать так, что второй запрос либо получает
+    # 404 (заявка уже архивирована и удалена первым), но никогда не 200
+    # дважды и никогда не начисляет revenue дважды.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 58)
+    try:
+        for status in ("on_post", "ready"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
+            assert resp.status_code == 200
+
+        stats_before = (await client.get("/station/stats")).json()
+
+        r1, r2 = await asyncio.gather(
+            client.post(f"/bookings/{booking_id}/status", json={"status": "issued"}),
+            client.post(f"/bookings/{booking_id}/status", json={"status": "issued"}),
+        )
+        codes = sorted([r1.status_code, r2.status_code])
+        assert codes == [200, 404]  # ровно один успех, второй — уже нет заявки
+
+        stats_after = (await client.get("/station/stats")).json()
+        delta = Decimal(stats_after["total_revenue"]) - Decimal(stats_before["total_revenue"])
+        assert delta == Decimal("500.00")  # не задвоилось до 1000.00
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)

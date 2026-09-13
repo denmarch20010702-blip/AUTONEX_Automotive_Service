@@ -33,7 +33,10 @@ async def list_clients(
 ) -> list[Client]:
     query = select(Client)
     if email is not None:
-        query = query.where(Client.email == email)
+        # Email хранится нормализованным (нижний регистр) с этого фикса —
+        # но нормализуем и вход, чтобы старые данные/чужие клиенты API
+        # тоже находились независимо от регистра запроса.
+        query = query.where(Client.email == email.strip().lower())
     result = await session.execute(query)
     return list(result.scalars().all())
 
@@ -76,5 +79,5 @@ async def delete_client(client_id: int, session: AsyncSession = Depends(get_sess
         await session.rollback()
         raise HTTPException(
             status_code=409,
-            detail="Нельзя удалить клиента — у него есть автомобили или заявки",
+            detail="Нельзя удалить клиента — у него есть автомобили, заявки или шины на хранении",
         )

@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 import { useBookingStatus } from "../../api/events";
 import { formatSlotLabel } from "./SlotPicker";
 import { CheckCircleIcon } from "../icons";
@@ -31,9 +33,14 @@ export function SuccessCard({
       <p>
         Статус: <StatusIndicator status={status} />
       </p>
-      <button type="button" className="primary-button" onClick={onRestart}>
-        Записаться ещё раз
-      </button>
+      <div style={{ display: "flex", justifyContent: "center", gap: "1rem", marginTop: "1rem" }}>
+        <Link to="/cabinet" className="primary-button" style={{ textDecoration: "none" }}>
+          Перейти в личный кабинет
+        </Link>
+        <button type="button" className="link-button" onClick={onRestart}>
+          Записаться ещё раз
+        </button>
+      </div>
     </div>
   );
 }

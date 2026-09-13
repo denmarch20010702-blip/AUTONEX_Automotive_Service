@@ -1,9 +1,30 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import bookings, cars, catalog, clients, events, health, station
+from app.api import (
+    additional_works,
+    bookings,
+    cars,
+    catalog,
+    clients,
+    events,
+    health,
+    station,
+    tire_sets,
+)
+from app.services.robot_timer import scheduler
 
-app = FastAPI(title="Станция техобслуживания")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.start()
+    yield
+    scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="Станция техобслуживания", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,3 +40,5 @@ app.include_router(catalog.router)
 app.include_router(bookings.router)
 app.include_router(events.router)
 app.include_router(station.router)
+app.include_router(tire_sets.router)
+app.include_router(additional_works.router)

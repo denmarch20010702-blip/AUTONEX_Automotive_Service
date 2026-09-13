@@ -1,32 +1,39 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  deleteService,
   getStationStats,
+  issueTireSet,
   listAllCars,
+  listAllClients,
   listArchive,
   listBookings,
   listServices,
+  listTireSets,
   type ArchivedBooking,
   type Booking,
   type CarInfo,
+  type ClientInfo,
   type Service,
+  type TireSet,
 } from "../api/client";
 import { useBookingEvents } from "../api/events";
 import { EventLog } from "../components/EventLog";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { AddServiceForm } from "../components/station/AddServiceForm";
+import { AdditionalWorkPanel } from "../components/station/AdditionalWorkPanel";
 import { ArchiveTable } from "../components/station/ArchiveTable";
 import { BookingActions } from "../components/station/BookingActions";
-import { iconForService } from "../components/icons";
+import { EditableServiceTile } from "../components/station/EditableServiceTile";
 
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [services, setServices] = useState<Service[] | null>(null);
   const [cars, setCars] = useState<CarInfo[]>([]);
+  const [clients, setClients] = useState<ClientInfo[]>([]);
   const [revenue, setRevenue] = useState<string | null>(null);
   const [archive, setArchive] = useState<ArchivedBooking[]>([]);
   const [showArchive, setShowArchive] = useState(false);
+  const [tireSets, setTireSets] = useState<TireSet[]>([]);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
 
@@ -60,13 +67,27 @@ export function StationPage() {
       .catch((err) => setError(err.message));
   }, []);
 
+  const reloadClients = useCallback(() => {
+    listAllClients()
+      .then(setClients)
+      .catch((err) => setError(err.message));
+  }, []);
+
+  const reloadTireSets = useCallback(() => {
+    listTireSets({ activeOnly: true })
+      .then(setTireSets)
+      .catch((err) => setError(err.message));
+  }, []);
+
   useEffect(() => {
     reloadBookings();
     reloadServices();
     reloadCars();
     reloadRevenue();
     reloadArchive();
-  }, [reloadBookings, reloadServices, reloadCars, reloadRevenue, reloadArchive]);
+    reloadClients();
+    reloadTireSets();
+  }, [reloadBookings, reloadServices, reloadCars, reloadRevenue, reloadArchive, reloadClients, reloadTireSets]);
 
   // Пока перезапрашиваем список по каждому событию, а не редактируем его на
   // лету — просто и достаточно для каркаса; B7 (полноценный экран станции
@@ -78,22 +99,33 @@ export function StationPage() {
       reloadCars();
       reloadRevenue();
       reloadArchive();
+      // Каталог услуг раньше не входил в цикл живого обновления — если
+      // услугу удаляли в одной вкладке, в другой она "призраком" оставалась
+      // видна до ручного обновления страницы (заметка пользователя №5).
+      // Каталог не шлёт SSE-события сам по себе, но раз уж событие всё
+      // равно прилетело — заодно освежаем и его.
+      reloadServices();
     }
-  }, [events, reloadBookings, reloadCars, reloadRevenue, reloadArchive]);
-
-  const handleDeleteService = async (id: number) => {
-    if (!window.confirm("Удалить эту услугу из каталога?")) return;
-    try {
-      await deleteService(id);
-      setServices((prev) => (prev ?? []).filter((s) => s.id !== id));
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
+  }, [events, reloadBookings, reloadCars, reloadRevenue, reloadArchive, reloadServices]);
 
   const carLabel = (carId: number): string => {
     const car = cars.find((c) => c.id === carId);
     return car ? `${car.make} ${car.model}` : `#${carId}`;
+  };
+
+  const clientLabel = (clientId: number): string => {
+    const c = clients.find((x) => x.id === clientId);
+    return c ? c.name : `#${clientId}`;
+  };
+
+  const handleIssueTireSet = async (id: number) => {
+    if (!window.confirm("Выдать этот комплект шин клиенту?")) return;
+    try {
+      await issueTireSet(id);
+      reloadTireSets();
+    } catch (err) {
+      setError((err as Error).message);
+    }
   };
 
   return (
@@ -120,35 +152,17 @@ export function StationPage() {
       <h2>Каталог услуг</h2>
       {error && <p style={{ color: "red" }}>Ошибка: {error}</p>}
       <div className="tile-grid" style={{ marginBottom: "1rem" }}>
-        {services?.map((service) => {
-          const Icon = iconForService(service.name);
-          return (
-            <div key={service.id} className="tile-button" style={{ cursor: "default", position: "relative" }}>
-              <button
-                type="button"
-                onClick={() => handleDeleteService(service.id)}
-                title="Удалить услугу"
-                style={{
-                  position: "absolute",
-                  top: 6,
-                  right: 6,
-                  border: "none",
-                  background: "none",
-                  color: "var(--color-danger)",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  fontSize: "1rem",
-                  lineHeight: 1,
-                }}
-              >
-                ×
-              </button>
-              <Icon />
-              <span>{service.name}</span>
-              <span className="price">{service.price} ₽</span>
-            </div>
-          );
-        })}
+        {services?.map((service) => (
+          <EditableServiceTile
+            key={service.id}
+            service={service}
+            onSaved={(updated) =>
+              setServices((prev) => (prev ?? []).map((s) => (s.id === updated.id ? updated : s)))
+            }
+            onDeleted={(id) => setServices((prev) => (prev ?? []).filter((s) => s.id !== id))}
+            onError={setError}
+          />
+        ))}
       </div>
       <AddServiceForm onCreated={(service) => setServices((prev) => [...(prev ?? []), service])} />
 
@@ -165,6 +179,7 @@ export function StationPage() {
               <th>Начало</th>
               <th>Статус</th>
               <th>Действия</th>
+              <th>Доп. работы</th>
             </tr>
           </thead>
           <tbody>
@@ -186,6 +201,38 @@ export function StationPage() {
                     }}
                     onError={setError}
                   />
+                </td>
+                <td>
+                  <AdditionalWorkPanel bookingId={booking.id} refreshKey={events.length} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: "2rem" }}>Шины на хранении</h2>
+      {tireSets.length === 0 && <p style={{ color: "var(--color-muted)" }}>Сейчас никто не хранит шины.</p>}
+      {tireSets.length > 0 && (
+        <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th>Клиент</th>
+              <th>Автомобиль</th>
+              <th>Сдано</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {tireSets.map((t) => (
+              <tr key={t.id}>
+                <td>{clientLabel(t.client_id)}</td>
+                <td>{carLabel(t.car_id)}</td>
+                <td>{new Date(t.stored_at).toLocaleDateString()}</td>
+                <td>
+                  <button type="button" className="link-button" onClick={() => handleIssueTireSet(t.id)}>
+                    Выдать
+                  </button>
                 </td>
               </tr>
             ))}

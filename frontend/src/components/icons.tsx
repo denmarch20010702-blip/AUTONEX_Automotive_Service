@@ -89,6 +89,15 @@ export function PlusIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function PencilIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width="18" height="18" {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </Svg>
+  );
+}
+
 export function CheckCircleIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Svg width="56" height="56" {...props}>

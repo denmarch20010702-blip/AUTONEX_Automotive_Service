@@ -3,17 +3,23 @@ import { useNavigate } from "react-router-dom";
 
 import {
   deleteCar,
+  issueTireSet,
   listArchive,
   listBookings,
   listCars,
+  listTireSets,
+  storeTireSet,
   updateBookingStatus,
   updateCar,
   type ArchivedBooking,
   type Booking,
   type CarInfo,
+  type TireSet,
 } from "../api/client";
 import { useBookingEvents } from "../api/events";
 import { AddCarForm } from "../components/booking/AddCarForm";
+import { CAR_MAKES, modelsForMake } from "../data/carCatalog";
+import { ClientAdditionalWorks } from "../components/booking/ClientAdditionalWorks";
 import { IdentifyForm } from "../components/booking/IdentifyForm";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
 import { CarIcon, PlusIcon } from "../components/icons";
@@ -21,6 +27,73 @@ import { StatusIndicator } from "../components/StatusIndicator";
 import { useClientSession } from "../session/ClientSessionContext";
 
 const CANCELLABLE = new Set(["accepted", "on_post", "awaiting_approval", "ready"]);
+
+// Хранение шин (B1) — issued_at === null означает "на хранении сейчас".
+function TireSetRow({
+  car,
+  activeSet,
+  onChanged,
+  onError,
+}: {
+  car: CarInfo;
+  activeSet: TireSet | undefined;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const store = async () => {
+    setBusy(true);
+    try {
+      await storeTireSet({ client_id: car.client_id, car_id: car.id });
+      onChanged();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const issue = async () => {
+    if (!activeSet) return;
+    if (!window.confirm(`Забрать шины для ${car.make} ${car.model}?`)) return;
+    setBusy(true);
+    try {
+      await issueTireSet(activeSet.id);
+      onChanged();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <tr>
+      <td>
+        {car.make} {car.model}
+      </td>
+      <td>
+        {activeSet ? (
+          <>На хранении с {new Date(activeSet.stored_at).toLocaleDateString()}</>
+        ) : (
+          <span style={{ color: "var(--color-muted)" }}>Не сдавались</span>
+        )}
+      </td>
+      <td>
+        {activeSet ? (
+          <button type="button" className="link-button" disabled={busy} onClick={issue}>
+            Забрать
+          </button>
+        ) : (
+          <button type="button" className="link-button" disabled={busy} onClick={store}>
+            Сдать на хранение
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
 
 function EditableCarTile({
   car,
@@ -77,11 +150,21 @@ function EditableCarTile({
         {error && <div className="error-banner">{error}</div>}
         <div className="form-field">
           <label>Марка</label>
-          <input value={make} onChange={(e) => setMake(e.target.value)} />
+          <input value={make} list="edit-car-makes-list" onChange={(e) => setMake(e.target.value)} />
+          <datalist id="edit-car-makes-list">
+            {CAR_MAKES.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
         </div>
         <div className="form-field">
           <label>Модель</label>
-          <input value={model} onChange={(e) => setModel(e.target.value)} />
+          <input value={model} list="edit-car-models-list" onChange={(e) => setModel(e.target.value)} />
+          <datalist id="edit-car-models-list">
+            {modelsForMake(make).map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
         </div>
         <div className="form-field">
           <label>Пробег, км</label>
@@ -146,6 +229,7 @@ export function CabinetPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [history, setHistory] = useState<ArchivedBooking[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [tireSets, setTireSets] = useState<TireSet[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [addingCar, setAddingCar] = useState(false);
   const events = useBookingEvents();
@@ -155,6 +239,7 @@ export function CabinetPage() {
     listCars(client.id).then(setCars).catch((err) => setError(err.message));
     listBookings(client.id).then(setBookings).catch((err) => setError(err.message));
     listArchive(client.id).then(setHistory).catch((err) => setError(err.message));
+    listTireSets({ clientId: client.id }).then(setTireSets).catch((err) => setError(err.message));
   }, [client]);
 
   useEffect(() => {
@@ -268,6 +353,32 @@ export function CabinetPage() {
         />
       )}
 
+      <h2 style={{ marginTop: "2rem" }}>Хранение шин</h2>
+      {cars.length === 0 ? (
+        <p style={{ color: "var(--color-muted)" }}>Сначала добавь автомобиль.</p>
+      ) : (
+        <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th>Автомобиль</th>
+              <th>Статус</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {cars.map((car) => (
+              <TireSetRow
+                key={car.id}
+                car={car}
+                activeSet={tireSets.find((t) => t.car_id === car.id && t.issued_at === null)}
+                onChanged={reload}
+                onError={setError}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
+
       <h2 style={{ marginTop: "2rem" }}>Мои записи</h2>
       {bookings.length === 0 && <p>Записей пока нет.</p>}
       {bookings.length > 0 && (
@@ -278,6 +389,7 @@ export function CabinetPage() {
               <th>Когда</th>
               <th>Статус</th>
               <th></th>
+              <th>Доп. работы</th>
             </tr>
           </thead>
           <tbody>
@@ -299,6 +411,9 @@ export function CabinetPage() {
                       Отменить
                     </button>
                   )}
+                </td>
+                <td>
+                  <ClientAdditionalWorks bookingId={b.id} refreshKey={events.length} />
                 </td>
               </tr>
             ))}
@@ -334,7 +449,9 @@ export function CabinetPage() {
                       <td>
                         <StatusIndicator status={entry.status} />
                       </td>
-                      <td>{entry.total_price} ₽</td>
+                      {/* Сумма реально оплачена только за выданные заявки —
+                          см. тот же фикс в ArchiveTable.tsx (станция). */}
+                      <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

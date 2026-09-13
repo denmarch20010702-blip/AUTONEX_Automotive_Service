@@ -54,24 +54,31 @@ export function SlotPicker({
 }) {
   return (
     <div>
+      <button
+        type="button"
+        className="date-nav-arrow prev"
+        aria-label="Предыдущий день"
+        onClick={() => onDateChange(shiftDate(date, -1))}
+      >
+        ‹
+      </button>
+      <button
+        type="button"
+        className="date-nav-arrow next"
+        aria-label="Следующий день"
+        onClick={() => onDateChange(shiftDate(date, 1))}
+      >
+        ›
+      </button>
+
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          gap: "1rem",
           margin: "0 auto 1.5rem",
         }}
       >
-        <button
-          type="button"
-          className="date-nav-arrow"
-          aria-label="Предыдущий день"
-          onClick={() => onDateChange(shiftDate(date, -1))}
-        >
-          ‹
-        </button>
-
         <div className="form-field" style={{ maxWidth: 180 }}>
           <label htmlFor="slot-date">Дата</label>
           <input
@@ -81,15 +88,6 @@ export function SlotPicker({
             onChange={(event) => onDateChange(event.target.value)}
           />
         </div>
-
-        <button
-          type="button"
-          className="date-nav-arrow"
-          aria-label="Следующий день"
-          onClick={() => onDateChange(shiftDate(date, 1))}
-        >
-          ›
-        </button>
       </div>
 
       {loading && <p style={{ textAlign: "center" }}>Загрузка слотов...</p>}

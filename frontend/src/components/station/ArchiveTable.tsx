@@ -37,7 +37,11 @@ export function ArchiveTable({ entries }: { entries: ArchivedBooking[] }) {
             <td>
               <StatusIndicator status={entry.status} />
             </td>
-            <td>{entry.total_price} ₽</td>
+            {/* Сумма реально оплачена только за выданные заявки (issued
+                кредитует StationStats) — для отменённых показывать сумму
+                рядом с красным индикатором вводит в заблуждение, будто
+                деньги были получены. Найдено на практике 2026-09-13. */}
+            <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
             <td>{new Date(entry.archived_at).toLocaleString()}</td>
           </tr>
         ))}
