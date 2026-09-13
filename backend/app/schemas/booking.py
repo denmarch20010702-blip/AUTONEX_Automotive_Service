@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.models.booking import BookingStatus
+from app.schemas.service import ServiceRead
 
 
 class SlotOption(BaseModel):
@@ -33,3 +34,7 @@ class BookingRead(BaseModel):
     start_at: datetime
     end_at: datetime
     status: BookingStatus
+    # UI_description.md п.11 (таймер виден станции и клиенту) и п.12 (в
+    # таблице станции должна быть видна изначально забронированная услуга).
+    service_ends_at: datetime | None = None
+    services: list[ServiceRead] = []

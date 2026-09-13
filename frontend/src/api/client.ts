@@ -15,6 +15,8 @@ export interface Booking {
   start_at: string;
   end_at: string;
   status: string;
+  service_ends_at: string | null;
+  services: Service[];
 }
 
 export interface SlotOption {
@@ -229,6 +231,7 @@ export interface AdditionalWork {
   booking_id: number;
   description: string;
   price: string;
+  duration_minutes: number;
   proposed_by: "mechanic" | "ai";
   status: "pending" | "approved" | "declined";
   created_at: string;
@@ -241,14 +244,21 @@ export function listAdditionalWorks(bookingId: number): Promise<AdditionalWork[]
   return request<AdditionalWork[]>(`/bookings/${bookingId}/additional-works`);
 }
 
-export function proposeAdditionalWork(
-  bookingId: number,
-  payload: { description: string; price: number },
-): Promise<AdditionalWork> {
+// UI_description.md п.19: доп. работа выбирается кликом из каталога услуг,
+// не вводится вручную — backend сам берёт название/цену/длительность из
+// выбранной услуги.
+export function proposeAdditionalWork(bookingId: number, payload: { service_id: number }): Promise<AdditionalWork> {
   return request<AdditionalWork>(`/bookings/${bookingId}/additional-works`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+// UI_description.md п.17: количество неотвеченных предложений доп. работы
+// клиента — на этом держится красная точка у "Личный кабинет" в шапке.
+export async function getPendingAdditionalWorksCount(clientId: number): Promise<number> {
+  const result = await request<{ count: number }>(`/clients/${clientId}/additional-works/pending-count`);
+  return result.count;
 }
 
 export function respondAdditionalWork(id: number, status: "approved" | "declined"): Promise<AdditionalWork> {

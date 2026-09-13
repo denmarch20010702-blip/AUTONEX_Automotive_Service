@@ -9,20 +9,17 @@ const LABELS: Record<BookingEvent["type"], string> = {
 
 export function EventLog({ events }: { events: BookingEvent[] }) {
   return (
-    <section style={{ marginTop: "2rem" }}>
-      <h2>Живые события (realtime, A6)</h2>
-      <p style={{ color: "#666" }}>
-        Обновляется само, без перезагрузки страницы — открой эту страницу ещё в одной
-        вкладке и создай заявку через{" "}
-        <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer">
-          Swagger
-        </a>
-        , чтобы увидеть.
+    <div className="panel" style={{ marginTop: "2rem" }}>
+      <div className="panel-header">
+        <h2>Живые события (realtime)</h2>
+      </div>
+      <p className="panel-empty" style={{ marginTop: 0 }}>
+        Обновляется само, без перезагрузки страницы.
       </p>
       {events.length === 0 ? (
-        <p>Пока событий не было.</p>
+        <p className="panel-empty">Пока событий не было.</p>
       ) : (
-        <ul>
+        <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>
           {events.map((event, index) => (
             <li key={index}>
               <code>{event.receivedAt}</code> — {LABELS[event.type]}:{" "}
@@ -32,6 +29,6 @@ export function EventLog({ events }: { events: BookingEvent[] }) {
           ))}
         </ul>
       )}
-    </section>
+    </div>
   );
 }

@@ -73,7 +73,7 @@ export function EditableServiceTile({
           <input type="number" min={0} step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} />
         </div>
         <div className="wizard-nav">
-          <button type="button" className="link-button" onClick={() => setEditing(false)}>
+          <button type="button" className="ghost-button" onClick={() => setEditing(false)}>
             Отмена
           </button>
           <button type="button" className="primary-button" disabled={busy} onClick={save}>

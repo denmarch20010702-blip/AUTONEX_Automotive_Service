@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { listAdditionalWorks, proposeAdditionalWork, type AdditionalWork } from "../../api/client";
+import { listAdditionalWorks, proposeAdditionalWork, type AdditionalWork, type Service } from "../../api/client";
 
 const STATUS_LABEL: Record<AdditionalWork["status"], string> = {
   pending: "ожидает ответа",
@@ -10,20 +10,22 @@ const STATUS_LABEL: Record<AdditionalWork["status"], string> = {
 
 // Согласование доп. работ (B2) — станция предлагает, клиент отвечает в
 // своём кабинете. Здесь — сторона станции: список уже предложенного по
-// заявке + форма предложить новое.
+// заявке + выбор новой работы кликом из каталога услуг (UI_description.md
+// п.19 — без ввода данных вручную; после согласования запускается
+// настоящий таймер выполнения, см. app/api/additional_works.py).
 export function AdditionalWorkPanel({
   bookingId,
+  services,
   refreshKey,
 }: {
   bookingId: number;
+  services: Service[];
   refreshKey: number;
 }) {
   const [works, setWorks] = useState<AdditionalWork[]>([]);
-  const [adding, setAdding] = useState(false);
-  const [description, setDescription] = useState("");
-  const [price, setPrice] = useState("");
+  const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busyServiceId, setBusyServiceId] = useState<number | null>(null);
 
   const reload = () => {
     listAdditionalWorks(bookingId).then(setWorks).catch((err) => setError(err.message));
@@ -34,19 +36,17 @@ export function AdditionalWorkPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookingId, refreshKey]);
 
-  const propose = async () => {
-    setBusy(true);
+  const propose = async (serviceId: number) => {
+    setBusyServiceId(serviceId);
     setError(null);
     try {
-      await proposeAdditionalWork(bookingId, { description: description.trim(), price: Number(price) });
-      setDescription("");
-      setPrice("");
-      setAdding(false);
+      await proposeAdditionalWork(bookingId, { service_id: serviceId });
+      setPicking(false);
       reload();
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setBusy(false);
+      setBusyServiceId(null);
     }
   };
 
@@ -70,40 +70,29 @@ export function AdditionalWorkPanel({
           </span>
         </div>
       ))}
-      {!adding && (
-        <button type="button" className="link-button" onClick={() => setAdding(true)}>
+      {!picking && (
+        <button type="button" className="ghost-button" onClick={() => setPicking(true)}>
           + предложить доп. работу
         </button>
       )}
-      {adding && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.3rem" }}>
-          <input
-            type="text"
-            placeholder="Описание"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <input
-            type="number"
-            min={0}
-            step="0.01"
-            placeholder="Цена, ₽"
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-          />
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button type="button" className="link-button" onClick={() => setAdding(false)}>
-              Отмена
-            </button>
+      {picking && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem", marginTop: "0.3rem", minWidth: 180 }}>
+          {services.length === 0 && <p className="panel-empty">В каталоге пока нет услуг.</p>}
+          {services.map((s) => (
             <button
+              key={s.id}
               type="button"
-              className="link-button"
-              disabled={!description.trim() || !price || busy}
-              onClick={propose}
+              className="ghost-button"
+              style={{ textAlign: "left" }}
+              disabled={busyServiceId !== null}
+              onClick={() => propose(s.id)}
             >
-              Отправить
+              {s.name} — {s.price} ₽
             </button>
-          </div>
+          ))}
+          <button type="button" className="ghost-button" onClick={() => setPicking(false)}>
+            Отмена
+          </button>
         </div>
       )}
     </div>

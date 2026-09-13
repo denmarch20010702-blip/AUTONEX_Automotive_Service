@@ -17,6 +17,7 @@ import {
   type TireSet,
 } from "../api/client";
 import { useBookingEvents } from "../api/events";
+import { Countdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { AddServiceForm } from "../components/station/AddServiceForm";
@@ -24,6 +25,7 @@ import { AdditionalWorkPanel } from "../components/station/AdditionalWorkPanel";
 import { ArchiveTable } from "../components/station/ArchiveTable";
 import { BookingActions } from "../components/station/BookingActions";
 import { EditableServiceTile } from "../components/station/EditableServiceTile";
+import { useNotifications } from "../session/NotificationContext";
 
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
@@ -36,6 +38,16 @@ export function StationPage() {
   const [tireSets, setTireSets] = useState<TireSet[]>([]);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
+  const { markStationSeen } = useNotifications();
+
+  // UI_description.md п.17: заход на станцию гасит красную точку в шапке —
+  // у станции нет единого действия "принять/отклонить" на уровне всего
+  // экрана (в отличие от кабинета клиента), поэтому применяем правило
+  // "увидел список — точка погасла", а не завязываем на конкретное действие.
+  useEffect(() => {
+    markStationSeen();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const reloadBookings = useCallback(() => {
     listBookings()
@@ -105,7 +117,11 @@ export function StationPage() {
       // Каталог не шлёт SSE-события сам по себе, но раз уж событие всё
       // равно прилетело — заодно освежаем и его.
       reloadServices();
+      // Событие могло прилететь, пока станция уже открыта — не даём точке
+      // в шапке зажечься за спиной у того, кто и так смотрит на список.
+      markStationSeen();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, reloadBookings, reloadCars, reloadRevenue, reloadArchive, reloadServices]);
 
   const carLabel = (carId: number): string => {
@@ -116,6 +132,13 @@ export function StationPage() {
   const clientLabel = (clientId: number): string => {
     const c = clients.find((x) => x.id === clientId);
     return c ? c.name : `#${clientId}`;
+  };
+
+  // UI_description.md п.12: в таблице заявок должны быть видны отдельными
+  // столбиками и контакты клиента, и изначально забронированная услуга.
+  const clientContact = (clientId: number): string => {
+    const c = clients.find((x) => x.id === clientId);
+    return c ? `${c.name} · ${c.email}` : `#${clientId}`;
   };
 
   const handleIssueTireSet = async (id: number) => {
@@ -130,11 +153,7 @@ export function StationPage() {
 
   return (
     <div>
-      <h1>Экран станции</h1>
-      <p style={{ color: "#666" }}>
-        Здесь будет полноценная доска заявок по постам (шаг B7). Пока — каркас страницы,
-        подключение к API и живое обновление списка по событиям из A6.
-      </p>
+      <h1 className="step-title">Экран станции</h1>
 
       <div
         style={{
@@ -149,106 +168,131 @@ export function StationPage() {
         <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>{revenue ?? "…"} ₽</div>
       </div>
 
-      <h2>Каталог услуг</h2>
-      {error && <p style={{ color: "red" }}>Ошибка: {error}</p>}
-      <div className="tile-grid" style={{ marginBottom: "1rem" }}>
-        {services?.map((service) => (
-          <EditableServiceTile
-            key={service.id}
-            service={service}
-            onSaved={(updated) =>
-              setServices((prev) => (prev ?? []).map((s) => (s.id === updated.id ? updated : s)))
-            }
-            onDeleted={(id) => setServices((prev) => (prev ?? []).filter((s) => s.id !== id))}
-            onError={setError}
-          />
-        ))}
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Каталог услуг</h2>
+        </div>
+        <div className="tile-grid" style={{ marginBottom: "1rem" }}>
+          {services?.map((service) => (
+            <EditableServiceTile
+              key={service.id}
+              service={service}
+              onSaved={(updated) =>
+                setServices((prev) => (prev ?? []).map((s) => (s.id === updated.id ? updated : s)))
+              }
+              onDeleted={(id) => setServices((prev) => (prev ?? []).filter((s) => s.id !== id))}
+              onError={setError}
+            />
+          ))}
+        </div>
+        <AddServiceForm onCreated={(service) => setServices((prev) => [...(prev ?? []), service])} />
       </div>
-      <AddServiceForm onCreated={(service) => setServices((prev) => [...(prev ?? []), service])} />
 
-      <h2 style={{ marginTop: "2rem" }}>Все заявки</h2>
-      {!error && bookings === null && <p>Загрузка...</p>}
-      {bookings && bookings.length === 0 && <p>Заявок пока нет.</p>}
-      {bookings && bookings.length > 0 && (
-        <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Пост</th>
-              <th>Автомобиль</th>
-              <th>Начало</th>
-              <th>Статус</th>
-              <th>Действия</th>
-              <th>Доп. работы</th>
-            </tr>
-          </thead>
-          <tbody>
-            {bookings.map((booking) => (
-              <tr key={booking.id}>
-                <td>{booking.id}</td>
-                <td>{booking.post_id}</td>
-                <td>{carLabel(booking.car_id)}</td>
-                <td>{new Date(booking.start_at).toLocaleString()}</td>
-                <td>
-                  <StatusIndicator status={booking.status} />
-                </td>
-                <td>
-                  <BookingActions
-                    booking={booking}
-                    onChanged={() => {
-                      reloadBookings();
-                      reloadRevenue();
-                    }}
-                    onError={setError}
-                  />
-                </td>
-                <td>
-                  <AdditionalWorkPanel bookingId={booking.id} refreshKey={events.length} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <h2 style={{ marginTop: "2rem" }}>Шины на хранении</h2>
-      {tireSets.length === 0 && <p style={{ color: "var(--color-muted)" }}>Сейчас никто не хранит шины.</p>}
-      {tireSets.length > 0 && (
-        <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th>Клиент</th>
-              <th>Автомобиль</th>
-              <th>Сдано</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {tireSets.map((t) => (
-              <tr key={t.id}>
-                <td>{clientLabel(t.client_id)}</td>
-                <td>{carLabel(t.car_id)}</td>
-                <td>{new Date(t.stored_at).toLocaleDateString()}</td>
-                <td>
-                  <button type="button" className="link-button" onClick={() => handleIssueTireSet(t.id)}>
-                    Выдать
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <div style={{ marginTop: "2rem" }}>
-        <button type="button" className="link-button" onClick={() => setShowArchive((v) => !v)}>
-          {showArchive ? "Скрыть журнал" : `Показать журнал завершённых/отменённых (${archive.length})`}
-        </button>
-        {showArchive && (
-          <div style={{ marginTop: "1rem", overflowX: "auto" }}>
-            <ArchiveTable entries={archive} />
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Все заявки</h2>
+        </div>
+        {!error && bookings === null && <p className="panel-empty">Загрузка...</p>}
+        {bookings && bookings.length === 0 && <p className="panel-empty">Заявок пока нет.</p>}
+        {bookings && bookings.length > 0 && (
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Клиент</th>
+                  <th>Услуга</th>
+                  <th>Автомобиль</th>
+                  <th>Начало</th>
+                  <th>Статус</th>
+                  <th>Действия</th>
+                  <th>Доп. работы</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bookings.map((booking) => (
+                  <tr key={booking.id}>
+                    <td>{booking.id}</td>
+                    <td>{clientContact(booking.client_id)}</td>
+                    <td>{booking.services.map((s) => s.name).join(", ") || "—"}</td>
+                    <td>{carLabel(booking.car_id)}</td>
+                    <td>{new Date(booking.start_at).toLocaleString()}</td>
+                    <td>
+                      <StatusIndicator status={booking.status} />
+                      {booking.status === "on_post" && booking.service_ends_at && (
+                        <Countdown targetIso={booking.service_ends_at} />
+                      )}
+                    </td>
+                    <td>
+                      <BookingActions
+                        booking={booking}
+                        onChanged={() => {
+                          reloadBookings();
+                          reloadRevenue();
+                        }}
+                        onError={setError}
+                      />
+                    </td>
+                    <td>
+                      <AdditionalWorkPanel
+                        bookingId={booking.id}
+                        services={services ?? []}
+                        refreshKey={events.length}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Шины на хранении</h2>
+        </div>
+        {tireSets.length === 0 && <p className="panel-empty">Сейчас никто не хранит шины.</p>}
+        {tireSets.length > 0 && (
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Клиент</th>
+                  <th>Автомобиль</th>
+                  <th>Сдано</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {tireSets.map((t) => (
+                  <tr key={t.id}>
+                    <td>{clientLabel(t.client_id)}</td>
+                    <td>{carLabel(t.car_id)}</td>
+                    <td>{new Date(t.stored_at).toLocaleDateString()}</td>
+                    <td>
+                      <button type="button" className="action-button" onClick={() => handleIssueTireSet(t.id)}>
+                        Выдать
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Журнал</h2>
+          <button type="button" className="ghost-button" onClick={() => setShowArchive((v) => !v)}>
+            {showArchive ? "Скрыть" : `Показать (${archive.length})`}
+          </button>
+        </div>
+        {showArchive && <ArchiveTable entries={archive} />}
       </div>
 
       <EventLog events={events} />

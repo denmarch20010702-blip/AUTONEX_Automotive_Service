@@ -626,20 +626,69 @@ async def make_booking(client: AsyncClient, days_offset: int) -> tuple[int, int,
 
 @pytest.mark.asyncio
 async def test_status_happy_path_through_awaiting_approval(client: AsyncClient) -> None:
+    # UI_description.md п.13 (2026-09-13): "ожидает согласования" теперь
+    # осмысленный статус, а не свободно выставляемая станцией пометка — в
+    # него можно войти вручную только при реальном неотвеченном предложении
+    # доп. работы, и из него нельзя выйти, пока клиент не ответил (кроме
+    # отмены).
+    from app.services.robot_timer import _auto_advance
+
     client_id, car_id, service_id, booking_id = await make_booking(client, 50)
+    extra_resp = await client.post(
+        "/catalog", json={"name": f"Extra {uuid4().hex[:8]}", "duration_minutes": 15, "price": "900.00"}
+    )
+    extra_id = extra_resp.json()["id"]
     try:
-        for target in ("on_post", "awaiting_approval", "ready", "issued"):
-            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": target})
-            assert resp.status_code == 200, resp.json()
-            assert resp.json()["status"] == target
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        resp = await client.post(
+            f"/bookings/{booking_id}/additional-works",
+            json={"service_id": extra_id},
+        )
+        work_id = resp.json()["id"]
+
+        resp = await client.post(
+            f"/bookings/{booking_id}/status", json={"status": "awaiting_approval"}
+        )
+        assert resp.status_code == 200, resp.json()
+
+        # Пока клиент не ответил — дальше статус не двигается.
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "ready"})
+        assert resp.status_code == 409
+
+        # Ответ клиента на последнее неотвеченное предложение сам двигает
+        # заявку дальше (UI_description.md п.13) — станции не нужно вручную
+        # жать "готово" после этого. Согласованная доп. работа запускает
+        # настоящий таймер выполнения (п.19) — заявка возвращается "на
+        # пост", а не сразу "готова".
+        resp = await client.post(f"/additional-works/{work_id}/respond", json={"status": "approved"})
+        assert resp.status_code == 200
+
+        resp = await client.get(f"/bookings/{booking_id}")
+        assert resp.json()["status"] == "on_post"
+        assert resp.json()["service_ends_at"] is not None
+
+        # Не ждём реальные 15 минут — вызываем ту же функцию, что и
+        # планировщик (тот же приём, что уже применялся для C2/B2).
+        await _auto_advance(booking_id)
+        resp = await client.get(f"/bookings/{booking_id}")
+        assert resp.json()["status"] == "ready"
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "issued"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "issued"
     finally:
         # "issued" архивирует заявку (удаляет из активной таблицы, кладёт в
         # BookingArchive) и прибавляет её стоимость в общий счётчик станции —
         # cleanup(booking_id=...) безопасен на уже удалённой заявке, а
         # выручку и запись журнала убираем, чтобы прогон теста не оставлял
-        # следов в реальном dev-БД.
+        # следов в реальном dev-БД. Выручка теперь включает и одобренную
+        # доп. работу (500 за услугу + 900 за доп. работу, UI_description.md
+        # п.14).
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
-        await refund_revenue(Decimal("500.00"))
+        await client.delete(f"/catalog/{extra_id}")
+        await refund_revenue(Decimal("1400.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -730,6 +779,14 @@ async def test_cancel_allowed_from_on_post_and_awaiting_approval(client: AsyncCl
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200
 
+        # Вход в "ожидает согласования" требует реального неотвеченного
+        # предложения доп. работы (UI_description.md п.13) — само предложение
+        # намеренно оставляем без ответа, чтобы проверить именно отмену из
+        # этого статуса, а не автопродвижение дальше.
+        await client.post(
+            f"/bookings/{booking_id}/additional-works",
+            json={"service_id": service_id},
+        )
         resp = await client.post(
             f"/bookings/{booking_id}/status", json={"status": "awaiting_approval"}
         )
@@ -801,6 +858,90 @@ async def test_issued_archives_booking_and_credits_revenue(client: AsyncClient) 
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
         await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
+async def test_approved_additional_work_credited_only_on_issue(client: AsyncClient) -> None:
+    # UI_description.md п.14 (2026-09-13): деньги за согласованную доп.
+    # работу начисляются только при сдаче (issued), сверх суммы изначальной
+    # услуги — не в момент согласования и не для отклонённых.
+    from app.services.robot_timer import _auto_advance
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 57)
+    extra_approved = (
+        await client.post(
+            "/catalog", json={"name": f"Свечи {uuid4().hex[:8]}", "duration_minutes": 10, "price": "600.00"}
+        )
+    ).json()["id"]
+    extra_declined = (
+        await client.post(
+            "/catalog", json={"name": f"Тюнинг {uuid4().hex[:8]}", "duration_minutes": 10, "price": "10000.00"}
+        )
+    ).json()["id"]
+    try:
+        stats_before = (await client.get("/station/stats")).json()
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        approved = (
+            await client.post(
+                f"/bookings/{booking_id}/additional-works",
+                json={"service_id": extra_approved},
+            )
+        ).json()
+        declined = (
+            await client.post(
+                f"/bookings/{booking_id}/additional-works",
+                json={"service_id": extra_declined},
+            )
+        ).json()
+
+        resp = await client.post(
+            f"/bookings/{booking_id}/status", json={"status": "awaiting_approval"}
+        )
+        assert resp.status_code == 200
+
+        # Ответ на "declined" не последний pending (approved ещё висит) —
+        # заявка остаётся awaiting_approval, деньги ещё не начислены.
+        await client.post(f"/additional-works/{declined['id']}/respond", json={"status": "declined"})
+        stats_mid = (await client.get("/station/stats")).json()
+        assert stats_mid["total_revenue"] == stats_before["total_revenue"]
+
+        # Ответ на последнее pending-предложение сам доводит заявку дальше
+        # (п.13) — но т.к. работа одобрена, дальше значит "на пост" на
+        # длительность этой работы (п.19), не сразу "готова". Выручка всё
+        # ещё не начислена — это происходит только при выдаче.
+        resp = await client.post(
+            f"/additional-works/{approved['id']}/respond", json={"status": "approved"}
+        )
+        assert resp.status_code == 200
+        assert (await client.get(f"/bookings/{booking_id}")).json()["status"] == "on_post"
+        stats_mid2 = (await client.get("/station/stats")).json()
+        assert stats_mid2["total_revenue"] == stats_before["total_revenue"]
+
+        await _auto_advance(booking_id)
+        assert (await client.get(f"/bookings/{booking_id}")).json()["status"] == "ready"
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "issued"})
+        assert resp.status_code == 200
+
+        archive = (
+            await client.get("/station/archive", params={"client_id": client_id})
+        ).json()
+        # Услуга (500.00) + одобренная доп. работа (600.00), отклонённая
+        # (10000.00) в сумму не входит.
+        assert Decimal(archive[0]["total_price"]) == Decimal("1100.00")
+
+        stats_after = (await client.get("/station/stats")).json()
+        delta = Decimal(stats_after["total_revenue"]) - Decimal(stats_before["total_revenue"])
+        assert delta == Decimal("1100.00")
+    finally:
+        await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
+        await client.delete(f"/catalog/{extra_approved}")
+        await client.delete(f"/catalog/{extra_declined}")
+        await refund_revenue(Decimal("1100.00"))
         await delete_archive_entry(booking_id)
 
 

@@ -3,14 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from app.models.additional_work import AdditionalWorkStatus, ProposedBy
 
 
 class AdditionalWorkCreate(BaseModel):
-    description: str = Field(min_length=1)
-    price: Decimal = Field(gt=0)
+    # UI_description.md п.19: доп. работа выбирается кликом из каталога
+    # услуг, а не вводится вручную — эндпоинт сам берёт название/цену/
+    # длительность из выбранной услуги (см. app/api/additional_works.py).
+    service_id: int
     proposed_by: ProposedBy = ProposedBy.MECHANIC
 
 
@@ -25,6 +27,7 @@ class AdditionalWorkRead(BaseModel):
     booking_id: int
     description: str
     price: Decimal
+    duration_minutes: int
     proposed_by: ProposedBy
     status: AdditionalWorkStatus
     created_at: datetime

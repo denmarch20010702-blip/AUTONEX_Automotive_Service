@@ -98,6 +98,15 @@ export function PencilIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function ClockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width="14" height="14" {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.5 2" />
+    </Svg>
+  );
+}
+
 export function CheckCircleIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Svg width="56" height="56" {...props}>

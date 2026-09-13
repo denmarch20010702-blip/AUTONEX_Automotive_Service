@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { API_URL } from "./client";
 
@@ -10,11 +10,7 @@ export interface BookingEvent {
 
 const MAX_EVENTS = 20;
 
-// Подписка на тот же /events, что уже проверен вручную через `curl -N`
-// (см. VERIFICATION.md) — здесь то же самое, но через встроенный в браузер
-// EventSource вместо curl. Один хук на всё приложение (см. App.tsx),
-// чтобы обе страницы видели одни и те же события без повторного подключения.
-export function useBookingEvents(): BookingEvent[] {
+function useBookingEventsSource(): BookingEvent[] {
   const [events, setEvents] = useState<BookingEvent[]>([]);
   const sourceRef = useRef<EventSource | null>(null);
 
@@ -40,6 +36,22 @@ export function useBookingEvents(): BookingEvent[] {
   }, []);
 
   return events;
+}
+
+const EventsContext = createContext<BookingEvent[]>([]);
+
+// Подписка на тот же /events, что уже проверен вручную через `curl -N`
+// (см. VERIFICATION.md) — один-единственный `EventSource` на всё приложение
+// (см. App.tsx), а не по одному на каждую страницу/компонент, которая его
+// использует — раньше комментарий обещал это, но по факту `StationPage`,
+// `CabinetPage` и `SuccessCard` каждый открывали собственное соединение.
+export function EventsProvider({ children }: { children: ReactNode }) {
+  const events = useBookingEventsSource();
+  return <EventsContext.Provider value={events}>{children}</EventsContext.Provider>;
+}
+
+export function useBookingEvents(): BookingEvent[] {
+  return useContext(EventsContext);
 }
 
 // Живой статус конкретной заявки — используется на клиентском экране

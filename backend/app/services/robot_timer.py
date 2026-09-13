@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.db.session import async_session
 from app.models import AdditionalWork, AdditionalWorkStatus, Booking, BookingStatus
@@ -34,7 +35,10 @@ async def _auto_advance(booking_id: int) -> None:
     async with async_session() as session:
         booking = (
             await session.execute(
-                select(Booking).where(Booking.id == booking_id).with_for_update()
+                select(Booking)
+                .options(selectinload(Booking.services))
+                .where(Booking.id == booking_id)
+                .with_for_update()
             )
         ).scalar_one_or_none()
         # Заявку могли уже отменить или вручную продвинуть дальше, пока

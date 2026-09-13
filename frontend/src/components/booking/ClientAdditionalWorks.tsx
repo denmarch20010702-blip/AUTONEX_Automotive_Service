@@ -37,14 +37,13 @@ export function ClientAdditionalWorks({ bookingId, refreshKey }: { bookingId: nu
         <div key={w.id} style={{ marginBottom: "0.25rem" }}>
           {w.description} ({w.price} ₽)
           {w.status === "pending" ? (
-            <span style={{ marginLeft: "0.5rem" }}>
-              <button type="button" className="link-button" onClick={() => respond(w.id, "approved")}>
+            <span style={{ marginLeft: "0.5rem", display: "inline-flex", gap: "0.4rem" }}>
+              <button type="button" className="action-button" onClick={() => respond(w.id, "approved")}>
                 Принять
-              </button>{" "}
+              </button>
               <button
                 type="button"
-                className="link-button"
-                style={{ color: "var(--color-danger)" }}
+                className="action-button danger"
                 onClick={() => respond(w.id, "declined")}
               >
                 Отклонить

@@ -31,6 +31,18 @@ class AdditionalWork(Base):
     booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), index=True)
     description: Mapped[str] = mapped_column(Text)
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    # UI_description.md п.19: доп. работа выбирается из каталога услуг
+    # (`Service`) кликом, не вводится вручную — description/price выше
+    # остаются снимком названия/цены на момент предложения (та же логика,
+    # что и services_snapshot в архиве — каталог мог измениться позже), а
+    # duration_minutes нужна, чтобы после согласования запустить настоящий
+    # таймер выполнения этой доп. работы (см. app/api/additional_works.py).
+    duration_minutes: Mapped[int] = mapped_column(default=0, server_default="0")
+    # Отмечает, что длительность этой работы уже учтена в каком-то таймере
+    # (см. respond_additional_work) — без этого флага повторное предложение
+    # новой доп. работы после уже отработанной старой задвоило бы её
+    # длительность при пересчёте суммы для таймера.
+    execution_started: Mapped[bool] = mapped_column(default=False, server_default="false")
     proposed_by: Mapped[ProposedBy] = mapped_column(Enum(ProposedBy, name="proposed_by"))
     status: Mapped[AdditionalWorkStatus] = mapped_column(
         Enum(AdditionalWorkStatus, name="additional_work_status"),

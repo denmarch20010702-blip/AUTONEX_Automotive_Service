@@ -74,7 +74,7 @@ export function AddServiceForm({ onCreated }: { onCreated: (service: Service) =>
         />
       </div>
       <div className="wizard-nav">
-        <button type="button" className="link-button" onClick={() => setOpen(false)}>
+        <button type="button" className="ghost-button" onClick={() => setOpen(false)}>
           Отмена
         </button>
         <button

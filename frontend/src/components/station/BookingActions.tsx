@@ -2,15 +2,18 @@ import { updateBookingStatus, type Booking } from "../../api/client";
 
 const CANCELLABLE = new Set(["accepted", "on_post", "awaiting_approval", "ready"]);
 
-// Кнопки смены статуса заявки на станции — по прямой просьбе пользователя:
-// отметить клиента на посту, принять/отклонить согласование доп. работ,
-// принять готовую работу в конце (выдать), и в любой момент отменить.
+// Кнопки смены статуса заявки на станции: отметить клиента на посту,
+// принять готовую работу (выдать), в любой момент отменить.
 //
-// Ограничение: "Согласовано" и "Отклонено" оба ведут в один и тот же статус
-// READY — модель AdditionalWork (из A2.1) пока не подключена к этому потоку
-// статусов заявки, так что различие сейчас смысловое (для оператора), а не
-// сохраняется отдельным полем. Подключение AdditionalWork — за рамками
-// этого шага.
+// Заметка пользователя (UI_description.md, п.13, 2026-09-13): раньше здесь
+// были ещё "Запросить согласование"/"Согласовано"/"Отклонено" — фиктивные
+// кнопки, никак не связанные с реальными AdditionalWork (просто трогали
+// статус заявки). Согласование теперь по-настоящему делает клиент в своём
+// кабинете (B2), а заявка сама переходит в "готова", как только клиент
+// ответил на последнее предложение (см. app/api/additional_works.py) — или
+// автоматически по таймеру (app/services/robot_timer.py). Ручной кнопки для
+// входа в "ожидает согласования" больше нет — в этот статус заявка попадает
+// только когда есть реальное неотвеченное предложение.
 export function BookingActions({
   booking,
   onChanged,
@@ -36,18 +39,12 @@ export function BookingActions({
   }
   if (booking.status === "on_post") {
     buttons.push({ label: "Готово", status: "ready" });
-    buttons.push({ label: "Запросить согласование", status: "awaiting_approval" });
   }
   if (booking.status === "awaiting_approval") {
     buttons.push({
-      label: "Согласовано",
+      label: "Готово",
       status: "ready",
-      title: "Доп. работы одобрены клиентом",
-    });
-    buttons.push({
-      label: "Отклонено",
-      status: "ready",
-      title: "Клиент отказался от доп. работ — делаем только основную услугу",
+      title: "Обычно происходит само, как только клиент ответит на предложение — эта кнопка на случай сбоя",
     });
   }
   if (booking.status === "ready") {
@@ -65,9 +62,8 @@ export function BookingActions({
         <button
           key={b.label}
           type="button"
-          className="link-button"
+          className={`action-button${b.danger ? " danger" : ""}`}
           title={b.title}
-          style={b.danger ? { color: "var(--color-danger)" } : undefined}
           onClick={() => act(b.status)}
         >
           {b.label}

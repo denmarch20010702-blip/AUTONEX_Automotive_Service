@@ -22,6 +22,7 @@ import { CAR_MAKES, modelsForMake } from "../data/carCatalog";
 import { ClientAdditionalWorks } from "../components/booking/ClientAdditionalWorks";
 import { IdentifyForm } from "../components/booking/IdentifyForm";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
+import { Countdown } from "../components/Countdown";
 import { CarIcon, PlusIcon } from "../components/icons";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { useClientSession } from "../session/ClientSessionContext";
@@ -82,11 +83,11 @@ function TireSetRow({
       </td>
       <td>
         {activeSet ? (
-          <button type="button" className="link-button" disabled={busy} onClick={issue}>
+          <button type="button" className="action-button" disabled={busy} onClick={issue}>
             Забрать
           </button>
         ) : (
-          <button type="button" className="link-button" disabled={busy} onClick={store}>
+          <button type="button" className="action-button" disabled={busy} onClick={store}>
             Сдать на хранение
           </button>
         )}
@@ -179,7 +180,7 @@ function EditableCarTile({
           />
         </div>
         <div className="wizard-nav">
-          <button type="button" className="link-button" onClick={() => setEditing(false)}>
+          <button type="button" className="ghost-button" onClick={() => setEditing(false)}>
             Отмена
           </button>
           <button type="button" className="primary-button" disabled={busy} onClick={save}>
@@ -191,21 +192,27 @@ function EditableCarTile({
   }
 
   return (
-    <div className="tile-button" style={{ cursor: "default" }}>
+    // Найдено на практике (UI_description.md, п.18): кнопки "Изменить"/
+    // "Удалить" не помещались бок о бок в жёстко квадратной 150×150
+    // `.tile-button` и выпирали за её границы. Плитка авто — не кнопка
+    // выбора услуги из спеки, ей не обязательно быть строго квадратной:
+    // высота теперь "auto" (не меньше исходной), а кнопки — в столбик на
+    // всю ширину, что гарантированно вписывается в 150px.
+    <div className="tile-button" style={{ cursor: "default", height: "auto", minHeight: 150 }}>
       <CarIcon />
       <span>
         {car.make} {car.model}
       </span>
       <span className="price">{car.mileage} км</span>
       {error && <div className="error-banner">{error}</div>}
-      <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
-        <button type="button" className="link-button" onClick={() => setEditing(true)}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", marginTop: "0.5rem", width: "100%" }}>
+        <button type="button" className="ghost-button" style={{ width: "100%" }} onClick={() => setEditing(true)}>
           Изменить
         </button>
         <button
           type="button"
-          className="link-button"
-          style={{ color: "var(--color-danger)" }}
+          className="action-button danger"
+          style={{ width: "100%" }}
           disabled={busy}
           onClick={remove}
         >
@@ -274,8 +281,8 @@ export function CabinetPage() {
               <button
                 key={c.id}
                 type="button"
-                className="link-button"
-                style={{ display: "block", margin: "0.25rem auto" }}
+                className="ghost-button"
+                style={{ display: "block", margin: "0.35rem auto" }}
                 onClick={() => switchTo(c.id)}
               >
                 {c.name} ({c.email})
@@ -300,7 +307,7 @@ export function CabinetPage() {
         <button type="button" className="primary-button" onClick={() => navigate("/")}>
           Записаться на услугу
         </button>
-        <button type="button" className="link-button" onClick={logout}>
+        <button type="button" className="ghost-button" onClick={logout}>
           Выйти
         </button>
       </div>
@@ -312,7 +319,7 @@ export function CabinetPage() {
           </p>
           <div style={{ display: "flex", justifyContent: "center", gap: "0.75rem", flexWrap: "wrap" }}>
             {otherAccounts.map((c) => (
-              <button key={c.id} type="button" className="link-button" onClick={() => switchTo(c.id)}>
+              <button key={c.id} type="button" className="ghost-button" onClick={() => switchTo(c.id)}>
                 {c.name} ({c.email})
               </button>
             ))}
@@ -322,142 +329,168 @@ export function CabinetPage() {
 
       {error && <div className="error-banner">{error}</div>}
 
-      <h2>Мои автомобили</h2>
-      <div className="tile-grid" style={{ marginBottom: "1rem" }}>
-        {cars.map((car) => (
-          <EditableCarTile
-            key={car.id}
-            car={car}
-            onSaved={(updated) => setCars((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))}
-            onDeleted={(id) => setCars((prev) => prev.filter((c) => c.id !== id))}
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Мои автомобили</h2>
+        </div>
+        <div className="tile-grid" style={{ marginBottom: "1rem" }}>
+          {cars.map((car) => (
+            <EditableCarTile
+              key={car.id}
+              car={car}
+              onSaved={(updated) => setCars((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))}
+              onDeleted={(id) => setCars((prev) => prev.filter((c) => c.id !== id))}
+            />
+          ))}
+        </div>
+        {!addingCar && (
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <button type="button" className="add-car-button" onClick={() => setAddingCar(true)}>
+              <CarIcon width={24} height={24} />
+              <PlusIcon />
+              добавить автомобиль
+            </button>
+          </div>
+        )}
+        {addingCar && (
+          <AddCarForm
+            clientId={client.id}
+            onCreated={(car) => {
+              setCars((prev) => [...prev, car]);
+              setAddingCar(false);
+            }}
+            onCancel={() => setAddingCar(false)}
           />
-        ))}
+        )}
       </div>
-      {!addingCar && (
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <button type="button" className="add-car-button" onClick={() => setAddingCar(true)}>
-            <CarIcon width={24} height={24} />
-            <PlusIcon />
-            добавить автомобиль
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Хранение шин</h2>
+        </div>
+        {cars.length === 0 ? (
+          <p className="panel-empty">Сначала добавь автомобиль.</p>
+        ) : (
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Автомобиль</th>
+                  <th>Статус</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {cars.map((car) => (
+                  <TireSetRow
+                    key={car.id}
+                    car={car}
+                    activeSet={tireSets.find((t) => t.car_id === car.id && t.issued_at === null)}
+                    onChanged={reload}
+                    onError={setError}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Мои записи</h2>
+        </div>
+        {bookings.length === 0 && <p className="panel-empty">Записей пока нет.</p>}
+        {bookings.length > 0 && (
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Услуга</th>
+                  <th>Когда</th>
+                  <th>Статус</th>
+                  <th></th>
+                  <th>Доп. работы</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bookings.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.id}</td>
+                    <td>{b.services.map((s) => s.name).join(", ") || "—"}</td>
+                    <td>{formatSlotLabel(b.start_at)}</td>
+                    <td>
+                      <StatusIndicator status={b.status} />
+                      {b.status === "on_post" && b.service_ends_at && (
+                        <Countdown targetIso={b.service_ends_at} />
+                      )}
+                    </td>
+                    <td>
+                      {CANCELLABLE.has(b.status) && (
+                        <button
+                          type="button"
+                          className="action-button danger"
+                          onClick={() => cancelBooking(b.id)}
+                        >
+                          Отменить
+                        </button>
+                      )}
+                    </td>
+                    <td>
+                      <ClientAdditionalWorks bookingId={b.id} refreshKey={events.length} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          <h2>История</h2>
+          <button type="button" className="ghost-button" onClick={() => setShowHistory((v) => !v)}>
+            {showHistory ? "Скрыть" : `Показать (${history.length})`}
           </button>
         </div>
-      )}
-      {addingCar && (
-        <AddCarForm
-          clientId={client.id}
-          onCreated={(car) => {
-            setCars((prev) => [...prev, car]);
-            setAddingCar(false);
-          }}
-          onCancel={() => setAddingCar(false)}
-        />
-      )}
-
-      <h2 style={{ marginTop: "2rem" }}>Хранение шин</h2>
-      {cars.length === 0 ? (
-        <p style={{ color: "var(--color-muted)" }}>Сначала добавь автомобиль.</p>
-      ) : (
-        <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th>Автомобиль</th>
-              <th>Статус</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {cars.map((car) => (
-              <TireSetRow
-                key={car.id}
-                car={car}
-                activeSet={tireSets.find((t) => t.car_id === car.id && t.issued_at === null)}
-                onChanged={reload}
-                onError={setError}
-              />
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <h2 style={{ marginTop: "2rem" }}>Мои записи</h2>
-      {bookings.length === 0 && <p>Записей пока нет.</p>}
-      {bookings.length > 0 && (
-        <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Когда</th>
-              <th>Статус</th>
-              <th></th>
-              <th>Доп. работы</th>
-            </tr>
-          </thead>
-          <tbody>
-            {bookings.map((b) => (
-              <tr key={b.id}>
-                <td>{b.id}</td>
-                <td>{formatSlotLabel(b.start_at)}</td>
-                <td>
-                  <StatusIndicator status={b.status} />
-                </td>
-                <td>
-                  {CANCELLABLE.has(b.status) && (
-                    <button
-                      type="button"
-                      className="link-button"
-                      style={{ color: "var(--color-danger)" }}
-                      onClick={() => cancelBooking(b.id)}
-                    >
-                      Отменить
-                    </button>
-                  )}
-                </td>
-                <td>
-                  <ClientAdditionalWorks bookingId={b.id} refreshKey={events.length} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <div style={{ marginTop: "2rem" }}>
-        <button type="button" className="link-button" onClick={() => setShowHistory((v) => !v)}>
-          {showHistory ? "Скрыть историю" : `Показать историю завершённых/отменённых (${history.length})`}
-        </button>
         {showHistory && (
-          <div style={{ marginTop: "1rem", overflowX: "auto" }}>
+          <>
             {history.length === 0 ? (
-              <p style={{ color: "var(--color-muted)" }}>Пока пусто.</p>
+              <p className="panel-empty">Пока пусто.</p>
             ) : (
-              <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <th>Когда была запись</th>
-                    <th>Автомобиль</th>
-                    <th>Статус</th>
-                    <th>Сумма</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((entry) => (
-                    <tr key={entry.id}>
-                      <td>{formatSlotLabel(entry.start_at)}</td>
-                      <td>
-                        {entry.car_make} {entry.car_model}
-                      </td>
-                      <td>
-                        <StatusIndicator status={entry.status} />
-                      </td>
-                      {/* Сумма реально оплачена только за выданные заявки —
-                          см. тот же фикс в ArchiveTable.tsx (станция). */}
-                      <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
+              <div className="data-table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Когда была запись</th>
+                      <th>Автомобиль</th>
+                      <th>Статус</th>
+                      <th>Сумма</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {history.map((entry) => (
+                      <tr key={entry.id}>
+                        <td>{formatSlotLabel(entry.start_at)}</td>
+                        <td>
+                          {entry.car_make} {entry.car_model}
+                        </td>
+                        <td>
+                          <StatusIndicator status={entry.status} />
+                        </td>
+                        {/* Сумма реально оплачена только за выданные заявки —
+                            см. тот же фикс в ArchiveTable.tsx (станция);
+                            включает согласованные доп. работы (п.14). */}
+                        <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>

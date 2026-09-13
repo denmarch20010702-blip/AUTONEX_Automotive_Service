@@ -153,7 +153,14 @@ async def create_booking(
         if isinstance(exc.orig, DeadlockDetectedError):
             raise HTTPException(status_code=409, detail="Слот уже занят")
         raise
-    await session.refresh(booking)
+    # Обычный `refresh()` не подгружает `services` (relationship "протухает"
+    # после commit) — без явного eager-load ниже Pydantic упал бы на попытке
+    # лениво дочитать её в асинхронной сессии (MissingGreenlet).
+    booking = (
+        await session.execute(
+            select(Booking).options(selectinload(Booking.services)).where(Booking.id == booking.id)
+        )
+    ).scalar_one()
     publish("booking_created", BookingRead.model_validate(booking).model_dump(mode="json"))
     return booking
 
@@ -162,7 +169,9 @@ async def create_booking(
 async def list_bookings(
     client_id: int | None = None, session: AsyncSession = Depends(get_session)
 ) -> list[Booking]:
-    query = select(Booking).order_by(Booking.start_at)
+    query = (
+        select(Booking).options(selectinload(Booking.services)).order_by(Booking.start_at)
+    )
     if client_id is not None:
         query = query.where(Booking.client_id == client_id)
     result = await session.execute(query)
@@ -171,7 +180,13 @@ async def list_bookings(
 
 @router.get("/{booking_id}", response_model=BookingRead)
 async def get_booking(booking_id: int, session: AsyncSession = Depends(get_session)) -> Booking:
-    booking = await session.get(Booking, booking_id)
+    booking = (
+        await session.execute(
+            select(Booking)
+            .options(selectinload(Booking.services))
+            .where(Booking.id == booking_id)
+        )
+    ).scalar_one_or_none()
     if booking is None:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     return booking
@@ -209,7 +224,9 @@ async def update_booking_status(
 
     # Заметка пользователя (B2, уточнение 2026-09-13): пока клиент не принял
     # или не отклонил предложенную доп. работу, статус заявки дальше не
-    # меняется — кроме отмены самой заявки, её разрешаем в любой момент.
+    # меняется — кроме отмены самой заявки (в любой момент) и входа в само
+    # "ожидает согласования" (это как раз и означает "ждём ответа клиента",
+    # а не обход его решения).
     if data.status != BookingStatus.CANCELLED:
         has_pending = (
             await session.execute(
@@ -221,13 +238,34 @@ async def update_booking_status(
                 .limit(1)
             )
         ).first()
-        if has_pending is not None:
+        if has_pending is not None and data.status != BookingStatus.AWAITING_APPROVAL:
             raise HTTPException(
                 status_code=409,
                 detail="Есть неотвеченное предложение доп. работы — статус не меняется, пока клиент не ответит",
             )
 
+        # UI_description.md п.13: раньше "ожидает согласования" можно было
+        # выставить вручную без единого реального предложения доп. работы —
+        # ровно то, что запутывало пользователя ("непонятно, зачем нужно
+        # согласование, если оно не отправляется клиенту"). Теперь входить в
+        # этот статус вручную бессмысленно и запрещено, если согласовывать
+        # реально нечего.
+        if has_pending is None and data.status == BookingStatus.AWAITING_APPROVAL:
+            raise HTTPException(
+                status_code=409,
+                detail="Нет неотвеченных предложений доп. работы — нечего согласовывать",
+            )
+
     booking.status = data.status
+
+    # UI_description.md п.11: таймер до завершения должен быть виден и
+    # станции, и клиенту — точку отсчёта фиксируем на самой заявке в момент
+    # приёма на пост (тот же момент, что запускает автотаймер ниже), а не
+    # только внутри задачи планировщика.
+    on_post_duration_minutes = sum(s.duration_minutes for s in booking.services)
+    if data.status == BookingStatus.ON_POST:
+        booking.service_ends_at = datetime.now(timezone.utc) + timedelta(minutes=on_post_duration_minutes)
+
     await session.flush()
     # Снимок для ответа/события снимаем ДО удаления ниже — после удаления
     # обращаться к атрибутам ORM-объекта уже нельзя.
@@ -265,7 +303,16 @@ async def update_booking_status(
             for w in additional_works
         ]
 
+        # UI_description.md п.14: деньги за согласованные доп. работы
+        # начисляются только при сдаче машины (issued), сверх суммы за
+        # изначальную услугу — не в момент согласования. Отклонённые/ещё не
+        # отвеченные (последних тут уже быть не может — см. guard выше) в
+        # сумму не входят.
         if completing:
+            total += sum(
+                (w.price for w in additional_works if w.status == AdditionalWorkStatus.APPROVED),
+                start=Decimal("0"),
+            )
             await session.execute(
                 update(StationStats)
                 .where(StationStats.id == STATION_STATS_ROW_ID)
@@ -314,7 +361,6 @@ async def update_booking_status(
     # само пойти по таймеру — длительность = сумма длительностей выбранных
     # услуг. Пилотная часть C2 (без очереди/симуляции сбоев).
     if data.status == BookingStatus.ON_POST:
-        total_minutes = sum(s.duration_minutes for s in booking.services)
-        schedule_auto_advance(booking.id, timedelta(minutes=total_minutes))
+        schedule_auto_advance(booking.id, timedelta(minutes=on_post_duration_minutes))
 
     return BookingRead(**snapshot)

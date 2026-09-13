@@ -150,15 +150,22 @@ body {
   font-size: 2.5rem;
   line-height: 1;
   cursor: pointer;
-  padding: 0.5rem;
+  /* Заметка пользователя (п.15): зона клика вокруг "скобки" должна быть
+     шире самого символа — увеличенный padding вместо видимой формы кнопки. */
+  padding: 1.5rem 1.25rem;
+  min-width: 44px;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .date-nav-arrow.prev {
-  left: 0.75rem;
+  left: 1.75rem;
 }
 
 .date-nav-arrow.next {
-  right: 0.75rem;
+  right: 1.75rem;
 }
 
 .date-nav-arrow:hover {
@@ -298,4 +305,133 @@ body {
   display: flex;
   justify-content: space-between;
   margin-top: 2rem;
+}
+
+/* Начиная с B1/B2 в интерфейс станции/кабинета попали "голые" HTML-таблицы
+   и серые подчёркнутые ссылки для реальных действий (выдать, отменить,
+   принять доп. работу) — выбивались из общего минималистичного
+   бледно-зелёного стиля выше. Ниже — единый набор "окон"/кнопок для этих
+   экранов, по прямой просьбе пользователя (2026-09-13). */
+
+.panel {
+  background: #fbfefc;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.panel-empty {
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+
+.data-table-wrap {
+  overflow-x: auto;
+  border-radius: 14px;
+  border: 1px solid var(--color-border);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th {
+  background: var(--color-primary);
+  color: var(--color-text);
+  text-align: left;
+  font-weight: 600;
+  padding: 0.65rem 0.9rem;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 0.65rem 0.9rem;
+  border-top: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+.data-table tbody tr:hover {
+  background: #f3faf5;
+}
+
+/* Небольшая заметная кнопка настоящего действия в строке таблицы/панели —
+   заменяет собой прежние серые .link-button там, где действие важное
+   (выдать, принять, отклонить, отменить), а не просто навигация. */
+.action-button {
+  background: var(--color-primary);
+  border: none;
+  border-radius: 8px;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.action-button:hover {
+  background: var(--color-primary-hover);
+}
+
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-button.danger {
+  background: var(--color-error-bg);
+  color: var(--color-danger);
+}
+
+.action-button.danger:hover {
+  background: #fbd9d9;
+}
+
+/* Второстепенное, но всё ещё настоящее действие (переключить аккаунт,
+   развернуть журнал, выйти) — не серая ссылка, а тихая обводная кнопка. */
+.ghost-button {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.ghost-button:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* Обратный отсчёт до конца обслуживания (UI_description.md, п.11) — виден
+   и станции, и клиенту рядом с индикатором статуса. */
+.countdown-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--color-border);
+  color: var(--color-text);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
 }

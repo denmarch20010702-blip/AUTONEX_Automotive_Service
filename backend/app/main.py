@@ -14,11 +14,13 @@ from app.api import (
     station,
     tire_sets,
 )
+from app.services.reminders import schedule_reminder_sweep
 from app.services.robot_timer import scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    schedule_reminder_sweep(scheduler)
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)

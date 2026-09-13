@@ -47,6 +47,16 @@ class Booking(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Заметка пользователя (UI_description.md, п.11): таймер до завершения
+    # работ должен быть виден и станции, и клиенту — момент, когда сработает
+    # автотаймер (см. app/services/robot_timer.py), сохраняем на самой
+    # заявке, а не только внутри задачи планировщика, иначе фронтенду неоткуда
+    # взять точку отсчёта для обратного отсчёта.
+    service_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # B3: напоминание клиенту за день до записи должно прийти РОВНО одно —
+    # флаг гарантирует это при периодическом опросе (app/services/reminders.py),
+    # а не полагается на точную привязку к моменту "минус 24 часа".
+    reminder_sent: Mapped[bool] = mapped_column(default=False, server_default="false")
 
     client: Mapped["Client"] = relationship(back_populates="bookings")
     car: Mapped["Car"] = relationship(back_populates="bookings")

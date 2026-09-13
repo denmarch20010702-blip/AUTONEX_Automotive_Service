@@ -7,45 +7,48 @@ import { StatusIndicator } from "../StatusIndicator";
 // живые данные — клиент/машина могли с тех пор измениться.
 export function ArchiveTable({ entries }: { entries: ArchivedBooking[] }) {
   if (entries.length === 0) {
-    return <p style={{ color: "var(--color-muted)" }}>Журнал пока пуст.</p>;
+    return <p className="panel-empty">Журнал пока пуст.</p>;
   }
 
   return (
-    <table border={1} cellPadding={6} style={{ borderCollapse: "collapse" }}>
-      <thead>
-        <tr>
-          <th>ID заявки</th>
-          <th>Клиент</th>
-          <th>Автомобиль</th>
-          <th>Когда была запись</th>
-          <th>Статус</th>
-          <th>Сумма</th>
-          <th>Архивировано</th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map((entry) => (
-          <tr key={entry.id}>
-            <td>{entry.original_booking_id}</td>
-            <td>
-              {entry.client_name} ({entry.client_email})
-            </td>
-            <td>
-              {entry.car_make} {entry.car_model}
-            </td>
-            <td>{new Date(entry.start_at).toLocaleString()}</td>
-            <td>
-              <StatusIndicator status={entry.status} />
-            </td>
-            {/* Сумма реально оплачена только за выданные заявки (issued
-                кредитует StationStats) — для отменённых показывать сумму
-                рядом с красным индикатором вводит в заблуждение, будто
-                деньги были получены. Найдено на практике 2026-09-13. */}
-            <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
-            <td>{new Date(entry.archived_at).toLocaleString()}</td>
+    <div className="data-table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>ID заявки</th>
+            <th>Клиент</th>
+            <th>Автомобиль</th>
+            <th>Когда была запись</th>
+            <th>Статус</th>
+            <th>Сумма</th>
+            <th>Архивировано</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {entries.map((entry) => (
+            <tr key={entry.id}>
+              <td>{entry.original_booking_id}</td>
+              <td>
+                {entry.client_name} ({entry.client_email})
+              </td>
+              <td>
+                {entry.car_make} {entry.car_model}
+              </td>
+              <td>{new Date(entry.start_at).toLocaleString()}</td>
+              <td>
+                <StatusIndicator status={entry.status} />
+              </td>
+              {/* Сумма реально оплачена только за выданные заявки (issued
+                  кредитует StationStats) — для отменённых показывать сумму
+                  рядом с красным индикатором вводит в заблуждение, будто
+                  деньги были получены. Найдено на практике 2026-09-13. Сумма
+                  включает согласованные доп. работы сверх услуги (п.14). */}
+              <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
+              <td>{new Date(entry.archived_at).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
