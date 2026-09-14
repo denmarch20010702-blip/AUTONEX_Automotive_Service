@@ -862,6 +862,28 @@ async def test_issued_archives_booking_and_credits_revenue(client: AsyncClient) 
 
 
 @pytest.mark.asyncio
+async def test_issued_updates_car_last_service_date(client: AsyncClient) -> None:
+    # UI_description.md п.31 (2026-09-14): дата последнего обслуживания
+    # машины должна сама обновляться на дату, когда обслуживание реально
+    # прошло, а не оставаться пустой/старой после выдачи.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 60)
+    try:
+        car_before = (await client.get(f"/cars/{car_id}")).json()
+        assert car_before["last_service_date"] is None
+
+        for status in ("on_post", "ready", "issued"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
+            assert resp.status_code == 200
+
+        car_after = (await client.get(f"/cars/{car_id}")).json()
+        assert car_after["last_service_date"] == date.today().isoformat()
+    finally:
+        await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
+        await refund_revenue(Decimal("500.00"))
+        await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
 async def test_approved_additional_work_credited_only_on_issue(client: AsyncClient) -> None:
     # UI_description.md п.14 (2026-09-13): деньги за согласованную доп.
     # работу начисляются только при сдаче (issued), сверх суммы изначальной
@@ -1038,3 +1060,132 @@ async def test_concurrent_double_issue_credits_revenue_exactly_once(client: Asyn
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
         await refund_revenue(Decimal("500.00"))
         await delete_archive_entry(booking_id)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_moves_booking_to_new_slot(client: AsyncClient) -> None:
+    # B4: перенос вместо отмены+повторной записи — тот же набор услуг и
+    # машина, новое время.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 59)
+    try:
+        new_day = date.today() + timedelta(days=60)
+        new_slot = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [service_id], "date": day_start_iso(new_day)},
+            )
+        ).json()[0]
+
+        resp = await client.post(
+            f"/bookings/{booking_id}/reschedule", json={"start_at": new_slot["start_at"]}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["start_at"] == new_slot["start_at"]
+        assert body["status"] == "accepted"
+
+        # Старое время реально свободно — можно записать туда другую машину.
+        old_day = date.today() + timedelta(days=59)
+        old_slots = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [service_id], "date": day_start_iso(old_day)},
+            )
+        ).json()
+        assert len(old_slots) > 0
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_excludes_own_old_slot_from_car_conflict(client: AsyncClient) -> None:
+    # exclude_booking_id должен позволять "перенести" заявку на СВОЁ же
+    # текущее время (например, просто чтобы поменять пост/проверить) без
+    # ложного 409 "машина уже записана" от самой себя.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 61)
+    try:
+        booking = (await client.get(f"/bookings/{booking_id}")).json()
+        resp = await client.post(
+            f"/bookings/{booking_id}/reschedule", json={"start_at": booking["start_at"]}
+        )
+        assert resp.status_code == 200
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_blocked_once_on_post(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 62)
+    try:
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        new_day = date.today() + timedelta(days=63)
+        new_slot = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [service_id], "date": day_start_iso(new_day)},
+            )
+        ).json()[0]
+        resp = await client.post(
+            f"/bookings/{booking_id}/reschedule", json={"start_at": new_slot["start_at"]}
+        )
+        assert resp.status_code == 409
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_to_slot_used_by_different_car_succeeds(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 64)
+    client_id2, car_id2, service_id2, booking_id2 = await make_booking(client, 65)
+    try:
+        booking2 = (await client.get(f"/bookings/{booking_id2}")).json()
+        resp = await client.post(
+            f"/bookings/{booking_id}/reschedule", json={"start_at": booking2["start_at"]}
+        )
+        # Разные машины/клиенты — конфликта по машине нет, но если это тот
+        # же слот и на нём заняты все посты, ожидаем 409 "Все посты заняты".
+        # В тестовой конфигурации 3 поста и всего одна другая заявка — слот
+        # должен пройти без конфликта.
+        assert resp.status_code == 200
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+        await cleanup(
+            client, booking_id=booking_id2, car_id=car_id2, client_id=client_id2, service_id=service_id2
+        )
+
+
+@pytest.mark.asyncio
+async def test_reschedule_nonexistent_booking_returns_404(client: AsyncClient) -> None:
+    future_day = date.today() + timedelta(days=90)
+    grid_aligned = datetime(future_day.year, future_day.month, future_day.day, 9, 0, tzinfo=timezone.utc)
+    resp = await client.post(
+        "/bookings/999999999/reschedule",
+        json={"start_at": grid_aligned.isoformat()},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_station_actionable_count_reflects_bookings_needing_a_decision(client: AsyncClient) -> None:
+    # UI_description.md п.22 (2026-09-14): красная точка у "Станция" должна
+    # держаться на реальном количестве заявок, ждущих решения station'а
+    # (accepted -> принять на пост; ready -> выдать), а не гаснуть просто
+    # от захода на страницу.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 66)
+    try:
+        before = (await client.get("/station/actionable-count")).json()["count"]
+        assert before >= 1  # свежая заявка в "accepted" уже требует решения
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        mid = (await client.get("/station/actionable-count")).json()["count"]
+        assert mid == before - 1  # ушла из "accepted", в "ready" ещё не пришла
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "ready"})
+        assert resp.status_code == 200
+        after = (await client.get("/station/actionable-count")).json()["count"]
+        assert after == before  # снова требует решения — теперь "выдать"
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)

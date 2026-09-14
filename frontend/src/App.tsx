@@ -3,6 +3,7 @@ import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 
 import { API_URL } from "./api/client";
 import { EventsProvider } from "./api/events";
+import { NotificationDot } from "./components/NotificationDot";
 import { CabinetPage } from "./pages/CabinetPage";
 import { BookingPage } from "./pages/BookingPage";
 import { StationPage } from "./pages/StationPage";
@@ -40,37 +41,18 @@ function AccountWidget() {
   );
 }
 
-// UI_description.md п.17: маленькая красная точка на ссылке навигации,
-// пока есть непрочитанное уведомление.
-function NotificationDot({ show }: { show: boolean }) {
-  if (!show) return null;
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: "var(--color-danger)",
-        marginLeft: "0.35rem",
-        verticalAlign: "middle",
-      }}
-    />
-  );
-}
-
 function NavLinks() {
-  const { clientPendingCount, stationHasUnseen } = useNotifications();
+  const { clientPendingCount, stationActionableCount } = useNotifications();
   return (
     <nav className="app-nav">
       <Link to="/">Запись</Link>
       <Link to="/cabinet">
         Личный кабинет
-        <NotificationDot show={clientPendingCount > 0} />
+        <NotificationDot show={clientPendingCount > 0} title={`${clientPendingCount} предложение(й) ждёт ответа`} />
       </Link>
       <Link to="/station">
         Станция
-        <NotificationDot show={stationHasUnseen} />
+        <NotificationDot show={stationActionableCount > 0} title={`${stationActionableCount} заявка(и) ждёт решения`} />
       </Link>
     </nav>
   );

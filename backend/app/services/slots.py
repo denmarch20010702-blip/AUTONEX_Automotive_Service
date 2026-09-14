@@ -34,15 +34,23 @@ async def get_service_duration(session: AsyncSession, service_ids: list[int]) ->
 
 
 async def get_bookings_overlapping(
-    session: AsyncSession, window_start: datetime, window_end: datetime
+    session: AsyncSession,
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    exclude_booking_id: int | None = None,
 ) -> dict[int, list[Booking]]:
-    existing_result = await session.execute(
-        select(Booking).where(
-            Booking.status != BookingStatus.CANCELLED,
-            Booking.start_at < window_end,
-            Booking.end_at > window_start,
-        )
+    # `exclude_booking_id` — для переноса (B4): заявка, которую переносят,
+    # физически ещё занимает свой СТАРЫЙ интервал в этой же транзакции, и
+    # без исключения себя самой всегда "конфликтовала" бы сама с собой.
+    query = select(Booking).where(
+        Booking.status != BookingStatus.CANCELLED,
+        Booking.start_at < window_end,
+        Booking.end_at > window_start,
     )
+    if exclude_booking_id is not None:
+        query = query.where(Booking.id != exclude_booking_id)
+    existing_result = await session.execute(query)
     bookings_by_post: dict[int, list[Booking]] = {}
     for booking in existing_result.scalars().all():
         bookings_by_post.setdefault(booking.post_id, []).append(booking)
@@ -54,23 +62,33 @@ def post_is_free(existing: list[Booking], start_at: datetime, end_at: datetime) 
 
 
 async def car_is_free(
-    session: AsyncSession, car_id: int, start_at: datetime, end_at: datetime
+    session: AsyncSession,
+    car_id: int,
+    start_at: datetime,
+    end_at: datetime,
+    *,
+    exclude_booking_id: int | None = None,
 ) -> bool:
     """Машина физически не может обслуживаться на двух постах одновременно —
     в отличие от постов, тут проверяем не по посту, а по car_id напрямую."""
-    result = await session.execute(
-        select(Booking.id).where(
-            Booking.car_id == car_id,
-            Booking.status != BookingStatus.CANCELLED,
-            Booking.start_at < end_at,
-            Booking.end_at > start_at,
-        )
+    query = select(Booking.id).where(
+        Booking.car_id == car_id,
+        Booking.status != BookingStatus.CANCELLED,
+        Booking.start_at < end_at,
+        Booking.end_at > start_at,
     )
+    if exclude_booking_id is not None:
+        query = query.where(Booking.id != exclude_booking_id)
+    result = await session.execute(query)
     return result.first() is None
 
 
 async def get_available_slots(
-    session: AsyncSession, service_ids: list[int], window_start: datetime
+    session: AsyncSession,
+    service_ids: list[int],
+    window_start: datetime,
+    *,
+    exclude_booking_id: int | None = None,
 ) -> list[dict]:
     """Клиенту не важно, на каком посту его обслужат — здесь отдаются только
     моменты времени, свободные хотя бы на одном посту. Конкретный пост
@@ -104,7 +122,9 @@ async def get_available_slots(
     # последний старт возможен почти в day_end, значит конец может уйти на
     # duration вперёд. Начало окна — просто day_start: заявка, ещё идущая на
     # начало дня, всё равно попадёт под фильтр end_at > window_start.
-    bookings_by_post = await get_bookings_overlapping(session, day_start, day_end + duration)
+    bookings_by_post = await get_bookings_overlapping(
+        session, day_start, day_end + duration, exclude_booking_id=exclude_booking_id
+    )
 
     slots: list[dict] = []
     candidate_start = day_start

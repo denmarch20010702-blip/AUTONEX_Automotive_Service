@@ -50,7 +50,13 @@ export function AddServiceForm({ onCreated }: { onCreated: (service: Service) =>
       {error && <div className="error-banner">{error}</div>}
       <div className="form-field">
         <label htmlFor="service-name">Название услуги</label>
-        <input id="service-name" type="text" value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          id="service-name"
+          type="text"
+          maxLength={60}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
       </div>
       <div className="form-field">
         <label htmlFor="service-duration">Длительность, мин</label>

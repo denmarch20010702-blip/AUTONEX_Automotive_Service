@@ -3,7 +3,12 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { API_URL } from "./client";
 
 export interface BookingEvent {
-  type: "booking_created" | "booking_status_changed" | "additional_work_proposed" | "additional_work_responded";
+  type:
+    | "booking_created"
+    | "booking_status_changed"
+    | "booking_rescheduled"
+    | "additional_work_proposed"
+    | "additional_work_responded";
   data: Record<string, unknown>;
   receivedAt: string;
 }
@@ -29,6 +34,7 @@ function useBookingEventsSource(): BookingEvent[] {
 
     source.addEventListener("booking_created", handle("booking_created"));
     source.addEventListener("booking_status_changed", handle("booking_status_changed"));
+    source.addEventListener("booking_rescheduled", handle("booking_rescheduled"));
     source.addEventListener("additional_work_proposed", handle("additional_work_proposed"));
     source.addEventListener("additional_work_responded", handle("additional_work_responded"));
 

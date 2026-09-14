@@ -241,6 +241,41 @@ async def test_last_response_with_approval_starts_execution_timer(client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_approval_after_main_service_already_ready_still_starts_timer(client: AsyncClient) -> None:
+    # UI_description.md п.20/25 (2026-09-14): реальный найденный баг —
+    # если доп. работу предлагали и одобряли ПОСЛЕ того, как основная
+    # услуга уже завершилась (заявка уже 'ready'), таймер выполнения
+    # никогда не запускался — работа считалась выполненной просто по факту
+    # одобрения, без реальной отработки.
+    from app.services.robot_timer import _auto_advance
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 309)
+    extra_id = await make_extra_service(client, price="300.00", duration_minutes=12)
+    try:
+        for status in ("on_post", "ready"):
+            resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
+            assert resp.status_code == 200
+
+        # Основная услуга уже готова — только теперь предлагаем доп. работу.
+        work = (await propose(client, booking_id, extra_id)).json()
+        resp = await client.post(f"/additional-works/{work['id']}/respond", json={"status": "approved"})
+        assert resp.status_code == 200
+
+        booking = (await client.get(f"/bookings/{booking_id}")).json()
+        assert booking["status"] == "on_post"  # раньше здесь оставалось "ready"
+        assert booking["service_ends_at"] is not None
+
+        await _auto_advance(booking_id)
+        booking = (await client.get(f"/bookings/{booking_id}")).json()
+        assert booking["status"] == "ready"
+    finally:
+        await cleanup(
+            client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id,
+            extra_service_ids=[extra_id],
+        )
+
+
+@pytest.mark.asyncio
 async def test_pending_count_drops_after_response(client: AsyncClient) -> None:
     # UI_description.md п.17: красная точка у "Личный кабинет" держится на
     # этом счётчике — должен расти при новом предложении и падать до 0

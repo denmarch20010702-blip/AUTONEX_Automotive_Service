@@ -182,6 +182,94 @@ async def test_cannot_delete_car_or_client_with_active_booking(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_cannot_update_car_with_active_booking(client: AsyncClient) -> None:
+    # UI_description.md п.27 (2026-09-14): реальный найденный баг — можно
+    # было поменять марку/модель/пробег машины, пока она уже стоит в
+    # активной заявке.
+    from datetime import date, datetime, timedelta, timezone
+
+    from app.db.session import async_session
+    from app.models import Booking
+
+    client_resp = await client.post(
+        "/clients", json={"email": unique_email(), "name": "Активная запись"}
+    )
+    client_id = client_resp.json()["id"]
+    car_resp = await client.post(
+        "/cars", json={"client_id": client_id, "make": "Kia", "model": "Sportage"}
+    )
+    car_id = car_resp.json()["id"]
+    service_resp = await client.post(
+        "/catalog", json={"name": f"Услуга {uuid4().hex}", "duration_minutes": 20, "price": "300.00"}
+    )
+    service_id = service_resp.json()["id"]
+
+    day = date.today() + timedelta(days=70)
+    slot = (
+        await client.get(
+            "/bookings/available-slots",
+            params={
+                "service_ids": [service_id],
+                "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat(),
+            },
+        )
+    ).json()[0]
+    booking_resp = await client.post(
+        "/bookings",
+        json={
+            "client_id": client_id,
+            "car_id": car_id,
+            "start_at": slot["start_at"],
+            "service_ids": [service_id],
+        },
+    )
+    booking_id = booking_resp.json()["id"]
+    try:
+        resp = await client.patch(f"/cars/{car_id}", json={"mileage": 99999})
+        assert resp.status_code == 409
+    finally:
+        async with async_session() as session:
+            booking = await session.get(Booking, booking_id)
+            await session.delete(booking)
+            await session.commit()
+        await client.delete(f"/cars/{car_id}")
+        await client.delete(f"/clients/{client_id}")
+        await client.delete(f"/catalog/{service_id}")
+
+
+@pytest.mark.asyncio
+async def test_cannot_update_car_with_blank_make_or_model(client: AsyncClient) -> None:
+    # UI_description.md п.26 (2026-09-14): реальный найденный баг — можно
+    # было сохранить машину с пустой маркой/моделью при редактировании
+    # (create требовал непустые значения, update — нет).
+    client_resp = await client.post(
+        "/clients", json={"email": unique_email(), "name": "Пустая марка"}
+    )
+    client_id = client_resp.json()["id"]
+    car_resp = await client.post(
+        "/cars", json={"client_id": client_id, "make": "Kia", "model": "Rio"}
+    )
+    car_id = car_resp.json()["id"]
+    try:
+        resp = await client.patch(f"/cars/{car_id}", json={"make": ""})
+        assert resp.status_code == 422
+
+        resp = await client.patch(f"/cars/{car_id}", json={"model": ""})
+        assert resp.status_code == 422
+
+        resp = await client.patch(f"/cars/{car_id}", json={"mileage": -5})
+        assert resp.status_code == 422
+
+        # Марка/модель не изменились после всех отклонённых попыток.
+        resp = await client.get(f"/cars/{car_id}")
+        assert resp.json()["make"] == "Kia"
+        assert resp.json()["model"] == "Rio"
+    finally:
+        await client.delete(f"/cars/{car_id}")
+        await client.delete(f"/clients/{client_id}")
+
+
+@pytest.mark.asyncio
 async def test_create_car_for_nonexistent_client_returns_404(client: AsyncClient) -> None:
     resp = await client.post(
         "/cars", json={"client_id": 999999999, "make": "Lada", "model": "Vesta"}
@@ -212,6 +300,27 @@ async def test_service_crud(client: AsyncClient) -> None:
 
     resp = await client.get(f"/catalog/{service_id}")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cannot_update_service_with_blank_or_overlong_name(client: AsyncClient) -> None:
+    # UI_description.md п.24/30 (2026-09-14): реальные найденные баги —
+    # можно было сохранить услугу с пустым названием при редактировании, и
+    # слишком длинное название расползалось за пределы плитки каталога.
+    name = f"Услуга {uuid4().hex}"
+    resp = await client.post("/catalog", json={"name": name, "duration_minutes": 30, "price": "500.00"})
+    service_id = resp.json()["id"]
+    try:
+        resp = await client.patch(f"/catalog/{service_id}", json={"name": ""})
+        assert resp.status_code == 422
+
+        resp = await client.patch(f"/catalog/{service_id}", json={"name": "Х" * 61})
+        assert resp.status_code == 422
+
+        resp = await client.get(f"/catalog/{service_id}")
+        assert resp.json()["name"] == name
+    finally:
+        await client.delete(f"/catalog/{service_id}")
 
 
 @pytest.mark.asyncio

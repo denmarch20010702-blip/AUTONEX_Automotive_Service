@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +22,7 @@ from app.schemas.additional_work import (
 from app.schemas.booking import BookingRead
 from app.services.events import publish
 from app.services.outbox_email import send_stub_email
-from app.services.robot_timer import schedule_auto_advance
+from app.services.robot_timer import resolve_next_step
 
 router = APIRouter(tags=["additional-works"])
 
@@ -155,37 +153,22 @@ async def respond_additional_work(
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        if booking is not None and booking.status == BookingStatus.AWAITING_APPROVAL:
-            # UI_description.md п.19: согласованная доп. работа — это ещё
-            # работа, которую нужно физически сделать, а не просто пометка.
-            # Берём все одобренные работы, длительность которых ещё не
-            # попадала ни в один таймер (execution_started=False, чтобы не
-            # задвоить уже отработанную длительность, если позже предложат
-            # ещё одну доп. работу), и едем на пост ещё на эту длительность —
-            # тем же автотаймером, что и основная услуга (C2).
-            newly_approved = (
-                await session.execute(
-                    select(AdditionalWork).where(
-                        AdditionalWork.booking_id == work.booking_id,
-                        AdditionalWork.status == AdditionalWorkStatus.APPROVED,
-                        AdditionalWork.execution_started.is_(False),
-                    )
-                )
-            ).scalars().all()
-            extra_minutes = sum(w.duration_minutes for w in newly_approved)
-
-            if extra_minutes > 0:
-                for w in newly_approved:
-                    w.execution_started = True
-                booking.status = BookingStatus.ON_POST
-                booking.service_ends_at = datetime.now(timezone.utc) + timedelta(minutes=extra_minutes)
-                await session.flush()
-                schedule_auto_advance(booking.id, timedelta(minutes=extra_minutes))
-            else:
-                # Все ответы по этому раунду — "отклонено", делать больше
-                # нечего сверх изначальной услуги.
-                booking.status = BookingStatus.READY
-
+        # UI_description.md п.20/25 (2026-09-14): раньше сюда заходили только
+        # если заявка в этот момент была РОВНО в 'awaiting_approval' — если
+        # клиент отвечал уже после того, как основная услуга закончилась
+        # (заявка 'ready'), таймер одобренной доп. работы вообще не
+        # запускался, и она считалась выполненной просто по факту ответа.
+        # Добавлено 'ready' к условию. 'accepted' сознательно не включаем —
+        # машина ещё не на посту вообще, финализировать заявку было бы
+        # неверно; 'on_post' тоже не включаем — там уже идёт другой таймер,
+        # который сам подхватит эту работу, когда закончится (см.
+        # resolve_next_step).
+        if booking is not None and booking.status in (
+            BookingStatus.AWAITING_APPROVAL,
+            BookingStatus.READY,
+        ):
+            await resolve_next_step(session, booking)
+            await session.flush()
             booking_snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
 
     await session.commit()

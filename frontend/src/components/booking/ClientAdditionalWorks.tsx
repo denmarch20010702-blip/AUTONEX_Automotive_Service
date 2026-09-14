@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { listAdditionalWorks, respondAdditionalWork, type AdditionalWork } from "../../api/client";
+import { NotificationDot } from "../NotificationDot";
 
 // Сторона клиента (B2): видит предложенные доп. работы по своей заявке и
 // отвечает — "принять"/"отклонить". Сама доп. работа не начинается, пока
@@ -35,6 +36,7 @@ export function ClientAdditionalWorks({ bookingId, refreshKey }: { bookingId: nu
       {error && <div className="error-banner">{error}</div>}
       {works.map((w) => (
         <div key={w.id} style={{ marginBottom: "0.25rem" }}>
+          <NotificationDot show={w.status === "pending"} title="Требуется ваш ответ" />
           {w.description} ({w.price} ₽)
           {w.status === "pending" ? (
             <span style={{ marginLeft: "0.5rem", display: "inline-flex", gap: "0.4rem" }}>

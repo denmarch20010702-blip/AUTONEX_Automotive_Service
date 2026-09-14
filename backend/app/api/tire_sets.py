@@ -8,8 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
-from app.models import Car, Client, TireSet
-from app.schemas.tire_set import TireSetCreate, TireSetRead
+from app.models import Car, Client, TireSet, TireSetArchive
+from app.schemas.tire_set import TireSetArchiveRead, TireSetCreate, TireSetRead
 
 router = APIRouter(prefix="/tire-sets", tags=["tire-sets"])
 
@@ -59,6 +59,17 @@ async def list_tire_sets(
     return list(result.scalars().all())
 
 
+@router.get("/archive", response_model=list[TireSetArchiveRead])
+async def list_tire_set_archive(
+    client_id: int | None = None, session: AsyncSession = Depends(get_session)
+) -> list[TireSetArchive]:
+    query = select(TireSetArchive).order_by(TireSetArchive.archived_at.desc())
+    if client_id is not None:
+        query = query.where(TireSetArchive.client_id == client_id)
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
 @router.post("/{tire_set_id}/issue", response_model=TireSetRead)
 async def issue_tire_set(
     tire_set_id: int, session: AsyncSession = Depends(get_session)
@@ -76,7 +87,35 @@ async def issue_tire_set(
     if tire_set.issued_at is not None:
         raise HTTPException(status_code=409, detail="Комплект уже выдан")
 
-    tire_set.issued_at = datetime.now(timezone.utc)
+    issued_at = datetime.now(timezone.utc)
+
+    # UI_description.md п.28: раньше выданный комплект оставался в живой
+    # таблице навсегда — внешний ключ на car_id/client_id блокировал
+    # удаление машины/клиента даже без единой реально активной сдачи.
+    # Теперь, как и заявки (BookingArchive), выданный комплект переезжает в
+    # денормализованный журнал и удаляется из живой таблицы.
+    client = await session.get(Client, tire_set.client_id)
+    car = await session.get(Car, tire_set.car_id)
+    session.add(
+        TireSetArchive(
+            original_tire_set_id=tire_set.id,
+            client_id=tire_set.client_id,
+            client_name=client.name if client else "?",
+            client_email=client.email if client else "?",
+            car_id=tire_set.car_id,
+            car_make=car.make if car else "?",
+            car_model=car.model if car else "?",
+            stored_at=tire_set.stored_at,
+            issued_at=issued_at,
+        )
+    )
+    archived_snapshot = TireSetRead(
+        id=tire_set.id,
+        client_id=tire_set.client_id,
+        car_id=tire_set.car_id,
+        stored_at=tire_set.stored_at,
+        issued_at=issued_at,
+    )
+    await session.delete(tire_set)
     await session.commit()
-    await session.refresh(tire_set)
-    return tire_set
+    return archived_snapshot

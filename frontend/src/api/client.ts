@@ -99,10 +99,16 @@ function localMidnightIso(dateStr: string): string {
   return new Date(year, month - 1, day, 0, 0, 0, 0).toISOString();
 }
 
-export function getAvailableSlots(serviceIds: number[], date: string): Promise<SlotOption[]> {
+export function getAvailableSlots(
+  serviceIds: number[],
+  date: string,
+  excludeBookingId?: number,
+): Promise<SlotOption[]> {
   const params = new URLSearchParams();
   serviceIds.forEach((id) => params.append("service_ids", String(id)));
   params.set("date", localMidnightIso(date));
+  // B4 (перенос): не показывать заявке саму себя как "занятый" слот.
+  if (excludeBookingId !== undefined) params.set("exclude_booking_id", String(excludeBookingId));
   return request<SlotOption[]>(`/bookings/available-slots?${params.toString()}`);
 }
 
@@ -122,12 +128,29 @@ export function updateBookingStatus(bookingId: number, status: string): Promise<
   });
 }
 
+// B4: перенос заявки на новое время (тот же набор услуг и машина) — только
+// пока заявка ещё не принята на пост.
+export function rescheduleBooking(bookingId: number, startAtIso: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${bookingId}/reschedule`, {
+    method: "POST",
+    body: JSON.stringify({ start_at: startAtIso }),
+  });
+}
+
 export interface StationStats {
   total_revenue: string;
 }
 
 export function getStationStats(): Promise<StationStats> {
   return request<StationStats>("/station/stats");
+}
+
+// UI_description.md п.22: количество заявок, реально ждущих решения
+// станции (accepted -> принять на пост, ready -> выдать) — на этом
+// держится красная точка у "Станция" в шапке.
+export async function getStationActionableCount(): Promise<number> {
+  const result = await request<{ count: number }>("/station/actionable-count");
+  return result.count;
 }
 
 export interface ArchivedBooking {
@@ -170,6 +193,16 @@ export function registerClient(payload: { email: string; name: string }): Promis
 
 export function getClient(id: number): Promise<ClientInfo> {
   return request<ClientInfo>(`/clients/${id}`);
+}
+
+// UI_description.md п.21/29: клиент сам меняет своё имя/почту или удаляет
+// свой аккаунт — прямо из личного кабинета.
+export function updateClient(id: number, payload: Partial<{ name: string; email: string }>): Promise<ClientInfo> {
+  return request<ClientInfo>(`/clients/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function deleteClient(id: number): Promise<void> {
+  return request<void>(`/clients/${id}`, { method: "DELETE" });
 }
 
 export function listAllClients(): Promise<ClientInfo[]> {

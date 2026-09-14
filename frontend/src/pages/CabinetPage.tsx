@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import {
   deleteCar,
+  deleteClient,
   issueTireSet,
   listArchive,
   listBookings,
@@ -11,9 +12,11 @@ import {
   storeTireSet,
   updateBookingStatus,
   updateCar,
+  updateClient,
   type ArchivedBooking,
   type Booking,
   type CarInfo,
+  type ClientInfo,
   type TireSet,
 } from "../api/client";
 import { useBookingEvents } from "../api/events";
@@ -21,6 +24,7 @@ import { AddCarForm } from "../components/booking/AddCarForm";
 import { CAR_MAKES, modelsForMake } from "../data/carCatalog";
 import { ClientAdditionalWorks } from "../components/booking/ClientAdditionalWorks";
 import { IdentifyForm } from "../components/booking/IdentifyForm";
+import { RescheduleControl } from "../components/booking/RescheduleControl";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
 import { Countdown } from "../components/Countdown";
 import { CarIcon, PlusIcon } from "../components/icons";
@@ -28,6 +32,16 @@ import { StatusIndicator } from "../components/StatusIndicator";
 import { useClientSession } from "../session/ClientSessionContext";
 
 const CANCELLABLE = new Set(["accepted", "on_post", "awaiting_approval", "ready"]);
+
+// "YYYY-MM-DD" -> "DD.MM.YYYY" по компонентам строки, без создания
+// Date-объекта — та же ловушка часового пояса, что уже чинили в
+// localMidnightIso (api/client.ts): `new Date("2026-09-14")` трактуется как
+// UTC-полночь и при отрицательном смещении часового пояса устройства
+// сдвигается на день назад при выводе через toLocaleDateString.
+function formatDateOnly(isoDate: string): string {
+  const [year, month, day] = isoDate.split("-");
+  return `${day}.${month}.${year}`;
+}
 
 // Хранение шин (B1) — issued_at === null означает "на хранении сейчас".
 function TireSetRow({
@@ -183,7 +197,12 @@ function EditableCarTile({
           <button type="button" className="ghost-button" onClick={() => setEditing(false)}>
             Отмена
           </button>
-          <button type="button" className="primary-button" disabled={busy} onClick={save}>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!make.trim() || !model.trim() || busy}
+            onClick={save}
+          >
             Сохранить
           </button>
         </div>
@@ -204,6 +223,10 @@ function EditableCarTile({
         {car.make} {car.model}
       </span>
       <span className="price">{car.mileage} км</span>
+      {/* UI_description.md п.31: дата последнего ТО теперь обновляется сама
+          при выдаче заявки — стоит показывать её, иначе изменение будет
+          незаметно клиенту. */}
+      <span className="price">ТО: {car.last_service_date ? formatDateOnly(car.last_service_date) : "нет данных"}</span>
       {error && <div className="error-banner">{error}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", marginTop: "0.5rem", width: "100%" }}>
         <button type="button" className="ghost-button" style={{ width: "100%" }} onClick={() => setEditing(true)}>
@@ -229,8 +252,99 @@ function EditableCarTile({
 // Быстрое переключение между уже известными на этом браузере аккаунтами —
 // через ClientSessionContext (localStorage), без пароля, как и весь
 // остальной клиентский флоу.
+// UI_description.md п.21/29: клиент сам меняет своё имя/почту или удаляет
+// свой аккаунт — прямо из личного кабинета, без обращения к станции.
+function ProfilePanel({
+  client,
+  onSaved,
+  onDeleted,
+}: {
+  client: ClientInfo;
+  onSaved: (client: ClientInfo) => void;
+  onDeleted: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(client.name);
+  const [email, setEmail] = useState(client.email);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await updateClient(client.id, { name: name.trim(), email: email.trim() });
+      onSaved(updated);
+      setEditing(false);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm("Удалить личный кабинет навсегда? Это действие нельзя отменить.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteClient(client.id);
+      onDeleted();
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="form-card" style={{ maxWidth: 320, margin: "0 auto 1.5rem" }}>
+        {error && <div className="error-banner">{error}</div>}
+        <div className="form-field">
+          <label>Имя</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="form-field">
+          <label>Почта</label>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </div>
+        <div className="wizard-nav">
+          <button type="button" className="ghost-button" onClick={() => setEditing(false)}>
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!name.trim() || !email.trim() || busy}
+            onClick={save}
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
+      {error && <div className="error-banner">{error}</div>}
+      <p className="step-subtitle" style={{ marginBottom: "0.5rem" }}>
+        {client.name} · {client.email}
+      </p>
+      <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem" }}>
+        <button type="button" className="ghost-button" onClick={() => setEditing(true)}>
+          Изменить профиль
+        </button>
+        <button type="button" className="action-button danger" disabled={busy} onClick={remove}>
+          Удалить аккаунт
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function CabinetPage() {
-  const { client, knownClients, login, logout, switchTo } = useClientSession();
+  const { client, knownClients, login, logout, switchTo, forget } = useClientSession();
   const navigate = useNavigate();
   const [cars, setCars] = useState<CarInfo[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -296,12 +410,15 @@ export function CabinetPage() {
 
   const otherAccounts = knownClients.filter((c) => c.id !== client.id);
 
+  const handleAccountDeleted = () => {
+    forget(client.id);
+    navigate("/");
+  };
+
   return (
     <div>
       <h1 className="step-title">Личный кабинет</h1>
-      <p className="step-subtitle">
-        {client.name} · {client.email}
-      </p>
+      <ProfilePanel client={client} onSaved={login} onDeleted={handleAccountDeleted} />
 
       <div style={{ display: "flex", justifyContent: "center", gap: "1rem", marginBottom: "1.5rem" }}>
         <button type="button" className="primary-button" onClick={() => navigate("/")}>
@@ -328,6 +445,27 @@ export function CabinetPage() {
       )}
 
       {error && <div className="error-banner">{error}</div>}
+
+      {/* UI_description.md п.23: письмо-напоминание за день до записи (B3)
+          пишется в email-заглушку, невидимую самому клиенту в интерфейсе —
+          тот же факт нужно показать и здесь, а не только в outbox_emails. */}
+      {(() => {
+        const now = Date.now();
+        const soon = bookings.filter((b) => {
+          const startsAt = new Date(b.start_at).getTime();
+          return startsAt > now && startsAt - now <= 24 * 60 * 60 * 1000;
+        });
+        if (soon.length === 0) return null;
+        return (
+          <div className="panel" style={{ background: "var(--color-primary)", textAlign: "center" }}>
+            {soon.map((b) => (
+              <p key={b.id} style={{ margin: "0.25rem 0" }}>
+                Напоминание: тебя ждём {formatSlotLabel(b.start_at)} — не забудь про этот визит.
+              </p>
+            ))}
+          </div>
+        );
+      })()}
 
       <div className="panel">
         <div className="panel-header">
@@ -427,15 +565,18 @@ export function CabinetPage() {
                       )}
                     </td>
                     <td>
-                      {CANCELLABLE.has(b.status) && (
-                        <button
-                          type="button"
-                          className="action-button danger"
-                          onClick={() => cancelBooking(b.id)}
-                        >
-                          Отменить
-                        </button>
-                      )}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+                        <RescheduleControl booking={b} onRescheduled={reload} onError={setError} />
+                        {CANCELLABLE.has(b.status) && (
+                          <button
+                            type="button"
+                            className="action-button danger"
+                            onClick={() => cancelBooking(b.id)}
+                          >
+                            Отменить
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td>
                       <ClientAdditionalWorks bookingId={b.id} refreshKey={events.length} />

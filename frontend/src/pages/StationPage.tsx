@@ -19,13 +19,13 @@ import {
 import { useBookingEvents } from "../api/events";
 import { Countdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
+import { NotificationDot } from "../components/NotificationDot";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { AddServiceForm } from "../components/station/AddServiceForm";
 import { AdditionalWorkPanel } from "../components/station/AdditionalWorkPanel";
 import { ArchiveTable } from "../components/station/ArchiveTable";
 import { BookingActions } from "../components/station/BookingActions";
 import { EditableServiceTile } from "../components/station/EditableServiceTile";
-import { useNotifications } from "../session/NotificationContext";
 
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
@@ -38,16 +38,6 @@ export function StationPage() {
   const [tireSets, setTireSets] = useState<TireSet[]>([]);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
-  const { markStationSeen } = useNotifications();
-
-  // UI_description.md п.17: заход на станцию гасит красную точку в шапке —
-  // у станции нет единого действия "принять/отклонить" на уровне всего
-  // экрана (в отличие от кабинета клиента), поэтому применяем правило
-  // "увидел список — точка погасла", а не завязываем на конкретное действие.
-  useEffect(() => {
-    markStationSeen();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const reloadBookings = useCallback(() => {
     listBookings()
@@ -117,9 +107,6 @@ export function StationPage() {
       // Каталог не шлёт SSE-события сам по себе, но раз уж событие всё
       // равно прилетело — заодно освежаем и его.
       reloadServices();
-      // Событие могло прилететь, пока станция уже открыта — не даём точке
-      // в шапке зажечься за спиной у того, кто и так смотрит на список.
-      markStationSeen();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, reloadBookings, reloadCars, reloadRevenue, reloadArchive, reloadServices]);
@@ -221,6 +208,14 @@ export function StationPage() {
                     <td>{new Date(booking.start_at).toLocaleString()}</td>
                     <td>
                       <StatusIndicator status={booking.status} />
+                      <NotificationDot
+                        show={booking.status === "accepted" || booking.status === "ready"}
+                        title={
+                          booking.status === "accepted"
+                            ? "Ждёт приёма на пост"
+                            : "Ждёт выдачи клиенту"
+                        }
+                      />
                       {booking.status === "on_post" && booking.service_ends_at && (
                         <Countdown targetIso={booking.service_ends_at} />
                       )}

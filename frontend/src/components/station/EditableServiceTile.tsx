@@ -62,7 +62,7 @@ export function EditableServiceTile({
       <div className="form-card" style={{ maxWidth: 280 }}>
         <div className="form-field">
           <label>Название</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} />
+          <input maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="form-field">
           <label>Длительность, мин</label>
@@ -76,7 +76,7 @@ export function EditableServiceTile({
           <button type="button" className="ghost-button" onClick={() => setEditing(false)}>
             Отмена
           </button>
-          <button type="button" className="primary-button" disabled={busy} onClick={save}>
+          <button type="button" className="primary-button" disabled={!name.trim() || busy} onClick={save}>
             Сохранить
           </button>
         </div>

@@ -81,6 +81,10 @@ async def test_cannot_store_second_active_set_for_same_car(client: AsyncClient) 
 
 @pytest.mark.asyncio
 async def test_cannot_issue_twice(client: AsyncClient) -> None:
+    # UI_description.md п.28 (2026-09-14): выданный комплект теперь
+    # архивируется и удаляется из живой таблицы (та же логика, что и у
+    # заявок) — повторная попытка выдачи не находит строку вообще, поэтому
+    # честно 404, а не 409 "уже выдан".
     client_id, car_id = await make_client_car(client)
     tire_set_id = None
     try:
@@ -91,7 +95,7 @@ async def test_cannot_issue_twice(client: AsyncClient) -> None:
         assert resp.status_code == 200
 
         resp = await client.post(f"/tire-sets/{tire_set_id}/issue")
-        assert resp.status_code == 409
+        assert resp.status_code == 404
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id)
 
@@ -112,3 +116,27 @@ async def test_store_for_someone_elses_car_returns_403(client: AsyncClient) -> N
 async def test_issue_nonexistent_tire_set_returns_404(client: AsyncClient) -> None:
     resp = await client.post("/tire-sets/999999999/issue")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_car_deletable_after_tire_set_issued(client: AsyncClient) -> None:
+    # UI_description.md п.28 (2026-09-14): реальный найденный баг — выданный
+    # (уже не активный) комплект шин навсегда блокировал удаление машины и
+    # клиента внешним ключом, а сообщение об ошибке лгало про "активное"
+    # хранение. Теперь выданный комплект архивируется и удаляется из живой
+    # таблицы — машину и клиента можно удалить сразу после выдачи.
+    client_id, car_id = await make_client_car(client)
+    resp = await client.post("/tire-sets", json={"client_id": client_id, "car_id": car_id})
+    tire_set_id = resp.json()["id"]
+
+    resp = await client.post(f"/tire-sets/{tire_set_id}/issue")
+    assert resp.status_code == 200
+
+    resp = await client.delete(f"/cars/{car_id}")
+    assert resp.status_code == 204  # раньше здесь был 409
+
+    resp = await client.delete(f"/clients/{client_id}")
+    assert resp.status_code == 204
+
+    archive = (await client.get("/tire-sets/archive", params={"client_id": client_id})).json()
+    assert any(a["original_tire_set_id"] == tire_set_id for a in archive)

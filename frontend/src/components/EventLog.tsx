@@ -3,6 +3,7 @@ import type { BookingEvent } from "../api/events";
 const LABELS: Record<BookingEvent["type"], string> = {
   booking_created: "Новая заявка",
   booking_status_changed: "Статус изменился",
+  booking_rescheduled: "Заявка перенесена",
   additional_work_proposed: "Предложена доп. работа",
   additional_work_responded: "Ответ по доп. работе",
 };

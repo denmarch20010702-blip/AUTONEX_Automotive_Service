@@ -24,6 +24,10 @@ class BookingStatusUpdate(BaseModel):
     status: BookingStatus
 
 
+class BookingReschedule(BaseModel):
+    start_at: datetime
+
+
 class BookingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -26,7 +26,7 @@ from app.models import (
     StationStats,
 )
 from app.models.booking import booking_services
-from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, SlotOption
+from app.schemas.booking import BookingCreate, BookingReschedule, BookingRead, BookingStatusUpdate, SlotOption
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
 from app.services.robot_timer import schedule_auto_advance
@@ -50,11 +50,17 @@ async def available_slots(
     # голой даты как UTC-суток рвёт выдачу слотов на границах часового пояса
     # клиента (обнаружено на практике 2026-09-13).
     day_start: datetime = Query(..., alias="date"),
+    # B4 (перенос): при выборе нового времени для УЖЕ существующей заявки
+    # её собственный старый интервал не должен считаться "занятостью" —
+    # иначе заявка вечно конфликтовала бы сама с собой.
+    exclude_booking_id: int | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     if day_start.tzinfo is None:
         raise HTTPException(status_code=422, detail="date должен содержать часовой пояс")
-    return await get_available_slots(session, service_ids, day_start)
+    return await get_available_slots(
+        session, service_ids, day_start, exclude_booking_id=exclude_booking_id
+    )
 
 
 @router.post("", response_model=BookingRead, status_code=201)
@@ -162,6 +168,93 @@ async def create_booking(
         )
     ).scalar_one()
     publish("booking_created", BookingRead.model_validate(booking).model_dump(mode="json"))
+    return booking
+
+
+@router.post("/{booking_id}/reschedule", response_model=BookingRead)
+async def reschedule_booking(
+    booking_id: int, data: BookingReschedule, session: AsyncSession = Depends(get_session)
+) -> Booking:
+    # B4: перенос вместо отмены+повторной записи — тот же набор услуг и
+    # машины, только новое время. Разрешён только пока заявка ещё не
+    # принята на пост: перенести уже начатое/законченное обслуживание
+    # физически не имеет смысла.
+    if data.start_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="start_at должен содержать часовой пояс")
+    if not is_on_slot_grid(data.start_at):
+        raise HTTPException(
+            status_code=422,
+            detail="start_at должен совпадать с одним из предложенных available-slots",
+        )
+    if data.start_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="Нельзя перенести запись в прошлое")
+
+    # Тот же порядок блокировок, что и в create_booking (авто → посты), по
+    # той же причине — избежать deadlock между конкурентными операциями.
+    booking = (
+        await session.execute(
+            select(Booking)
+            .options(selectinload(Booking.services))
+            .where(Booking.id == booking_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if booking is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if booking.status != BookingStatus.ACCEPTED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Перенос возможен только для заявки в статусе 'accepted', сейчас '{booking.status.value}'",
+        )
+
+    car = (
+        await session.execute(select(Car).where(Car.id == booking.car_id).with_for_update())
+    ).scalar_one()
+
+    duration = timedelta(minutes=sum(s.duration_minutes for s in booking.services))
+    new_end_at = data.start_at + duration
+
+    if not await car_is_free(
+        session, car.id, data.start_at, new_end_at, exclude_booking_id=booking.id
+    ):
+        raise HTTPException(status_code=409, detail="Автомобиль уже записан на это время")
+
+    posts = (
+        (await session.execute(select(Post).order_by(Post.id).with_for_update()))
+        .scalars()
+        .all()
+    )
+    bookings_by_post = await get_bookings_overlapping(
+        session, data.start_at, new_end_at, exclude_booking_id=booking.id
+    )
+    free_post = next(
+        (p for p in posts if post_is_free(bookings_by_post.get(p.id, []), data.start_at, new_end_at)),
+        None,
+    )
+    if free_post is None:
+        raise HTTPException(status_code=409, detail="Все посты заняты в это время")
+
+    booking.start_at = data.start_at
+    booking.end_at = new_end_at
+    booking.post_id = free_post.id
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Слот уже занят")
+    except DBAPIError as exc:
+        await session.rollback()
+        if isinstance(exc.orig, DeadlockDetectedError):
+            raise HTTPException(status_code=409, detail="Слот уже занят")
+        raise
+
+    booking = (
+        await session.execute(
+            select(Booking).options(selectinload(Booking.services)).where(Booking.id == booking.id)
+        )
+    ).scalar_one()
+    snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
+    publish("booking_rescheduled", snapshot)
     return booking
 
 
@@ -318,6 +411,12 @@ async def update_booking_status(
                 .where(StationStats.id == STATION_STATS_ROW_ID)
                 .values(total_revenue=StationStats.total_revenue + total)
             )
+            # UI_description.md п.31 (2026-09-14): "дата последнего
+            # обслуживания" на машине должна сама обновляться на дату, когда
+            # обслуживание реально прошло — `service_ends_at` — момент,
+            # рассчитанный автотаймером (C2), точнее отражает это, чем
+            # "сейчас" (когда станция нажала "выдать", может быть позже).
+            booking.car.last_service_date = (booking.service_ends_at or booking.end_at).date()
         session.add(
             BookingArchive(
                 original_booking_id=booking.id,

@@ -100,6 +100,15 @@ body {
   padding: 0.75rem;
   color: var(--color-text);
   transition: background 0.15s ease, border-color 0.15s ease;
+  overflow: hidden;
+}
+
+/* UI_description.md п.24: подстраховка для названий, сохранённых до того,
+   как появилась валидация длины на backend — переносится, а не вылезает
+   за пределы плитки. */
+.tile-button span {
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 .tile-button:hover {

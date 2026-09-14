@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
-from app.models import Car, Client
+from app.models import Booking, Car, Client
 from app.schemas.car import CarCreate, CarRead, CarUpdate
 
 router = APIRouter(prefix="/cars", tags=["cars"])
@@ -50,6 +50,21 @@ async def update_car(
     car = await session.get(Car, car_id)
     if car is None:
         raise HTTPException(status_code=404, detail="Автомобиль не найден")
+
+    # UI_description.md п.27 (2026-09-14): нельзя менять данные машины
+    # (марку/модель/пробег), пока у неё есть активная запись — живая
+    # `bookings` содержит только незавершённые заявки (issued/cancelled
+    # архивируются и удаляются оттуда сразу), так что само наличие строки
+    # уже значит "активна".
+    has_active_booking = (
+        await session.execute(select(Booking.id).where(Booking.car_id == car_id).limit(1))
+    ).first()
+    if has_active_booking is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Нельзя менять данные автомобиля, пока у него есть активная запись",
+        )
+
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(car, field, value)
     await session.commit()

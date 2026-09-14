@@ -8,6 +8,7 @@ from app.models.post import Post
 from app.models.service import Service
 from app.models.station_stats import STATION_STATS_ROW_ID, StationStats
 from app.models.tire_set import TireSet
+from app.models.tire_set_archive import TireSetArchive
 
 __all__ = [
     "AdditionalWork",
@@ -25,4 +26,5 @@ __all__ = [
     "StationStats",
     "STATION_STATS_ROW_ID",
     "TireSet",
+    "TireSetArchive",
 ]

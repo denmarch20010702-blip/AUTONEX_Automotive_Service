@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import async_session
@@ -31,6 +32,65 @@ def schedule_auto_advance(booking_id: int, duration: timedelta) -> None:
     )
 
 
+async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
+    """Решает, что делать с заявкой в момент, когда она "освобождается" с
+    поста — будь то конец основной услуги ИЛИ конец только что отработанной
+    доп. работы (см. вызовы ниже и в app/api/additional_works.py).
+
+    UI_description.md п.20/25 (2026-09-14): раньше таймер доп. работы
+    запускался только если её одобрили ДО того, как основная услуга уже
+    закончилась (заявка была ровно в 'awaiting_approval' в момент ответа
+    клиента) — если клиент одобрял позже (заявка уже 'ready', основная
+    работа готова) или почти одновременно с концом основной услуги, таймер
+    доп. работы не запускался вообще, и она считалась выполненной просто по
+    факту согласования, без реальной отработки. Эта функция — единая точка
+    принятия решения "что дальше", вызываемая и из таймера, и из ответа
+    клиента, поэтому пропустить отработку одобренной доп. работы теперь
+    невозможно ни при каком порядке событий.
+
+    Не коммитит сама — вызывающий код решает, когда это делать (может быть
+    частью более крупной транзакции)."""
+    has_pending = (
+        await session.execute(
+            select(AdditionalWork.id)
+            .where(
+                AdditionalWork.booking_id == booking.id,
+                AdditionalWork.status == AdditionalWorkStatus.PENDING,
+            )
+            .limit(1)
+        )
+    ).first()
+    if has_pending is not None:
+        # Неотвеченное предложение — дальше не едем, ждём клиента (B2).
+        booking.status = BookingStatus.AWAITING_APPROVAL
+        return
+
+    # Одобренные, но ещё не отработанные доп. работы — едем на пост ещё раз,
+    # на их суммарную длительность, тем же механизмом, что и основная
+    # услуга. `execution_started` не даёт задвоить длительность уже
+    # отработанной работы при повторном вызове этой функции позже.
+    newly_approved = (
+        await session.execute(
+            select(AdditionalWork).where(
+                AdditionalWork.booking_id == booking.id,
+                AdditionalWork.status == AdditionalWorkStatus.APPROVED,
+                AdditionalWork.execution_started.is_(False),
+            )
+        )
+    ).scalars().all()
+    extra_minutes = sum(w.duration_minutes for w in newly_approved)
+    if extra_minutes > 0:
+        for w in newly_approved:
+            w.execution_started = True
+        booking.status = BookingStatus.ON_POST
+        booking.service_ends_at = datetime.now(timezone.utc) + timedelta(minutes=extra_minutes)
+        schedule_auto_advance(booking.id, timedelta(minutes=extra_minutes))
+        return
+
+    # Ничего не ждём и нечего отрабатывать — всё сделано.
+    booking.status = BookingStatus.READY
+
+
 async def _auto_advance(booking_id: int) -> None:
     async with async_session() as session:
         booking = (
@@ -47,23 +107,7 @@ async def _auto_advance(booking_id: int) -> None:
         if booking is None or booking.status != BookingStatus.ON_POST:
             return
 
-        has_pending = (
-            await session.execute(
-                select(AdditionalWork.id)
-                .where(
-                    AdditionalWork.booking_id == booking_id,
-                    AdditionalWork.status == AdditionalWorkStatus.PENDING,
-                )
-                .limit(1)
-            )
-        ).first()
-
-        # Если есть неотвеченное предложение доп. работы — таймер доводит
-        # заявку до "ожидает согласования", а не сразу "готова" (B2:
-        # дальше статус не меняется, пока клиент не ответит).
-        booking.status = (
-            BookingStatus.AWAITING_APPROVAL if has_pending is not None else BookingStatus.READY
-        )
+        await resolve_next_step(session, booking)
         await session.commit()
         await session.refresh(booking)
         publish(
