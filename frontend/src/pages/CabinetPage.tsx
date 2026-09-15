@@ -5,6 +5,7 @@ import {
   deleteCar,
   deleteClient,
   getMaintenanceSuggestions,
+  getTireSeasonReminder,
   issueTireSet,
   listArchive,
   listBookings,
@@ -33,6 +34,7 @@ import { RescheduleControl } from "../components/booking/RescheduleControl";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
 import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { CarIcon, PlusIcon } from "../components/icons";
+import { Pagination } from "../components/Pagination";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { useClientSession } from "../session/ClientSessionContext";
 
@@ -289,7 +291,12 @@ function ProfilePanel({
   };
 
   const remove = async () => {
-    if (!window.confirm("Удалить личный кабинет навсегда? Это действие нельзя отменить.")) return;
+    if (
+      !window.confirm(
+        "Удалить личный кабинет навсегда? Все ваши машины и активные записи будут отменены и удалены вместе с профилем. Если у вас есть шины на хранении — забери их первым делом, иначе удаление не пройдёт. Отменить это действие нельзя."
+      )
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
@@ -354,14 +361,21 @@ export function CabinetPage() {
   const [cars, setCars] = useState<CarInfo[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [history, setHistory] = useState<ArchivedBooking[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyPage, setHistoryPage] = useState(1);
   const [showHistory, setShowHistory] = useState(false);
   const [tireSets, setTireSets] = useState<TireSet[]>([]);
   const [tireHistory, setTireHistory] = useState<TireSetArchiveEntry[]>([]);
+  const [tireHistoryTotal, setTireHistoryTotal] = useState(0);
+  const [tireHistoryPage, setTireHistoryPage] = useState(1);
   const [showTireHistory, setShowTireHistory] = useState(false);
   const [maintenance, setMaintenance] = useState<{
     suggestions: MaintenanceSuggestion[];
     slots_scarce: boolean;
   }>({ suggestions: [], slots_scarce: false });
+  const [tireSeasonReminder, setTireSeasonReminder] = useState<{ active: boolean; season_label: string } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [addingCar, setAddingCar] = useState(false);
   const events = useBookingEvents();
@@ -370,15 +384,29 @@ export function CabinetPage() {
     if (!client) return;
     listCars(client.id).then(setCars).catch((err) => setError(err.message));
     listBookings(client.id).then(setBookings).catch((err) => setError(err.message));
-    listArchive(client.id).then(setHistory).catch((err) => setError(err.message));
+    listArchive(client.id, historyPage)
+      .then((res) => {
+        setHistory(res.items);
+        setHistoryTotal(res.total);
+      })
+      .catch((err) => setError(err.message));
     listTireSets({ clientId: client.id }).then(setTireSets).catch((err) => setError(err.message));
-    listTireSetArchive(client.id).then(setTireHistory).catch((err) => setError(err.message));
+    listTireSetArchive(client.id, tireHistoryPage)
+      .then((res) => {
+        setTireHistory(res.items);
+        setTireHistoryTotal(res.total);
+      })
+      .catch((err) => setError(err.message));
     // B5: проактивное предложение — не критично для основного функционала
     // кабинета, поэтому тихо игнорируем ошибку, а не показываем баннер.
     getMaintenanceSuggestions(client.id)
       .then(setMaintenance)
       .catch(() => {});
-  }, [client]);
+    // B6: сезонное промо про хранение шин — тот же принцип, что и B5 выше.
+    getTireSeasonReminder(client.id)
+      .then(setTireSeasonReminder)
+      .catch(() => {});
+  }, [client, historyPage, tireHistoryPage]);
 
   useEffect(() => {
     reload();
@@ -506,6 +534,19 @@ export function CabinetPage() {
         </div>
       )}
 
+      {/* B6 (2026-09-15, найденный пользователем пробел): раньше это промо
+          уходило только в email-заглушку — теперь видно и здесь, тем же
+          принципом, что и баннер B5 выше. */}
+      {tireSeasonReminder?.active && (
+        <div className="panel" style={{ background: "var(--color-primary)", textAlign: "center" }}>
+          <p style={{ margin: "0.25rem 0" }}>
+            Сезонное напоминание ({tireSeasonReminder.season_label}): наша станция принимает шины на сезонное
+            хранение — можно освободить место в гараже или багажнике на весь сезон. Если вы ещё не пользовались
+            этой услугой — посмотрите раздел "Хранение шин" ниже.
+          </p>
+        </div>
+      )}
+
       <div className="panel">
         <div className="panel-header">
           <h2>Мои автомобили</h2>
@@ -515,8 +556,19 @@ export function CabinetPage() {
             <EditableCarTile
               key={car.id}
               car={car}
-              onSaved={(updated) => setCars((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))}
-              onDeleted={(id) => setCars((prev) => prev.filter((c) => c.id !== id))}
+              onSaved={(updated) => {
+                setCars((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                // UI_description.md п.43 (2026-09-15): без этого предложение
+                // пройти ТО (баннер ниже — зависит от пробега/даты именно
+                // этой машины) обновлялось только "случайно" — если что-то
+                // другое отдельно вызывало reload() — а не сразу после
+                // сохранения новых данных машины.
+                reload();
+              }}
+              onDeleted={(id) => {
+                setCars((prev) => prev.filter((c) => c.id !== id));
+                reload();
+              }}
             />
           ))}
         </div>
@@ -535,6 +587,11 @@ export function CabinetPage() {
             onCreated={(car) => {
               setCars((prev) => [...prev, car]);
               setAddingCar(false);
+              // UI_description.md п.43: новая машина может сразу нуждаться в
+              // ТО (например, при ручном вводе старой даты последнего
+              // обслуживания) — баннер должен появиться сразу, не только
+              // после перехода со страницы и обратно.
+              reload();
             }}
             onCancel={() => setAddingCar(false)}
           />
@@ -574,10 +631,16 @@ export function CabinetPage() {
         <div className="panel-header" style={{ marginTop: "1rem" }}>
           <h3 style={{ margin: 0 }}>История хранения шин</h3>
           <button type="button" className="ghost-button" onClick={() => setShowTireHistory((v) => !v)}>
-            {showTireHistory ? "Скрыть" : `Показать (${tireHistory.length})`}
+            {showTireHistory ? "Скрыть" : `Показать (${tireHistoryTotal})`}
           </button>
         </div>
-        {showTireHistory && <TireSetArchiveTable entries={tireHistory} />}
+        {showTireHistory && (
+          <>
+            <Pagination page={tireHistoryPage} total={tireHistoryTotal} pageSize={50} onChange={setTireHistoryPage} />
+            <TireSetArchiveTable entries={tireHistory} />
+            <Pagination page={tireHistoryPage} total={tireHistoryTotal} pageSize={50} onChange={setTireHistoryPage} />
+          </>
+        )}
       </div>
 
       <div className="panel">
@@ -640,11 +703,12 @@ export function CabinetPage() {
         <div className="panel-header">
           <h2>История</h2>
           <button type="button" className="ghost-button" onClick={() => setShowHistory((v) => !v)}>
-            {showHistory ? "Скрыть" : `Показать (${history.length})`}
+            {showHistory ? "Скрыть" : `Показать (${historyTotal})`}
           </button>
         </div>
         {showHistory && (
           <>
+            <Pagination page={historyPage} total={historyTotal} pageSize={50} onChange={setHistoryPage} />
             {history.length === 0 ? (
               <p className="panel-empty">Пока пусто.</p>
             ) : (
@@ -678,6 +742,7 @@ export function CabinetPage() {
                 </table>
               </div>
             )}
+            <Pagination page={historyPage} total={historyTotal} pageSize={50} onChange={setHistoryPage} />
           </>
         )}
       </div>

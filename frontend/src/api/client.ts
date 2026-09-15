@@ -194,10 +194,22 @@ export interface ArchivedBooking {
   archived_at: string;
 }
 
+// UI_description.md п.40 (2026-09-15): журналы разрослись настолько, что
+// приходилось много скроллить — backend теперь отдаёт их постранично (по
+// умолчанию 50 строк), а не всё сразу.
+export interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 // Журнал завершённых/отменённых заявок — по прямой просьбе пользователя,
 // вместо полного удаления (см. buisness/ARCHITECTURE.md).
-export function listArchive(clientId?: number): Promise<ArchivedBooking[]> {
-  return request<ArchivedBooking[]>(clientId ? `/station/archive?client_id=${clientId}` : "/station/archive");
+export function listArchive(clientId?: number, page = 1): Promise<Page<ArchivedBooking>> {
+  const params = new URLSearchParams({ page: String(page) });
+  if (clientId !== undefined) params.set("client_id", String(clientId));
+  return request<Page<ArchivedBooking>>(`/station/archive?${params.toString()}`);
 }
 
 // Клиент — без пароля, идентификация по email (см. buisness/ARCHITECTURE.md).
@@ -241,6 +253,15 @@ export function getMaintenanceSuggestions(
   clientId: number,
 ): Promise<{ suggestions: MaintenanceSuggestion[]; slots_scarce: boolean }> {
   return request(`/clients/${clientId}/maintenance-suggestions`);
+}
+
+// B6 (2026-09-15, найденный пользователем пробел): сезонное промо про
+// хранение шин раньше было видно только в email-заглушке — теперь и в
+// кабинете, тем же способом, что B5 выше.
+export function getTireSeasonReminder(
+  clientId: number,
+): Promise<{ active: boolean; season_label: string }> {
+  return request(`/clients/${clientId}/tire-season-reminder`);
 }
 
 export function listAllClients(): Promise<ClientInfo[]> {
@@ -313,11 +334,11 @@ export interface TireSetArchiveEntry {
 
 // Журнал приёма/выдачи шин — выданный комплект переезжает сюда и удаляется
 // из живой `tire-sets` (см. UI_description.md п.28, тот же принцип, что и
-// журнал заявок).
-export function listTireSetArchive(clientId?: number): Promise<TireSetArchiveEntry[]> {
-  return request<TireSetArchiveEntry[]>(
-    clientId ? `/tire-sets/archive?client_id=${clientId}` : "/tire-sets/archive",
-  );
+// журнал заявок). Постранично — см. п.40.
+export function listTireSetArchive(clientId?: number, page = 1): Promise<Page<TireSetArchiveEntry>> {
+  const params = new URLSearchParams({ page: String(page) });
+  if (clientId !== undefined) params.set("client_id", String(clientId));
+  return request<Page<TireSetArchiveEntry>>(`/tire-sets/archive?${params.toString()}`);
 }
 
 export interface AdditionalWork {

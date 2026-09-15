@@ -138,5 +138,5 @@ async def test_car_deletable_after_tire_set_issued(client: AsyncClient) -> None:
     resp = await client.delete(f"/clients/{client_id}")
     assert resp.status_code == 204
 
-    archive = (await client.get("/tire-sets/archive", params={"client_id": client_id})).json()
+    archive = (await client.get("/tire-sets/archive", params={"client_id": client_id})).json()["items"]
     assert any(a["original_tire_set_id"] == tire_set_id for a in archive)

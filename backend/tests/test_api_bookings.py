@@ -5,9 +5,11 @@ from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
 
 from app.db.session import async_session
-from app.models import Booking
+from app.models import AdditionalWork, Booking
 from helpers import make_startable_now
 
 
@@ -52,7 +54,16 @@ async def delete_booking(booking_id: int) -> None:
     # а оставленная заявка блокирует внешним ключом удаление поста/авто/
     # клиента и, в частности, ломает полный цикл downgrade/upgrade миграций
     # (проверено на практике — см. logs/EXECUTION_PLAN.md, шаг A4).
+    #
+    # Найденный на практике баг (2026-09-15): additional_works имеет FK на
+    # bookings без каскада (см. app/api/bookings.py) — без явного удаления
+    # его строк здесь DELETE FROM bookings падал с IntegrityError, если у
+    # заявки было хоть одно предложение доп. работы, и это оставляло
+    # заявку+клиента+машину висеть в общей БД, мешая соседним тестам через
+    # занятость постов. Тот же класс бага, что уже чинился в
+    # scripts/cleanup_test_data.py.
     async with async_session() as session:
+        await session.execute(sa_delete(AdditionalWork).where(AdditionalWork.booking_id == booking_id))
         booking = await session.get(Booking, booking_id)
         if booking is not None:
             await session.delete(booking)
@@ -105,7 +116,27 @@ async def cleanup(
 ) -> None:
     for bid in (booking_ids or []) + ([booking_id] if booking_id is not None else []):
         await delete_booking(bid)
-    for cid in (car_ids or []) + ([car_id] if car_id is not None else []):
+
+    # Найденный пользователем реальный баг (2026-09-15): если шаг ДО этого
+    # cleanup (типично — `make_startable_now`) упал или honestly skip'нулся
+    # раньше, чем заявка успела дойти до issued/cancelled и самоархивироваться,
+    # она оставалась висеть в статусе `accepted`, а вызывающий тест мог не
+    # передать сюда её id явно (рассчитывая, что она уже архивирована). DELETE
+    # машины/клиента в этом случае тихо возвращает 409 (httpx не бросает
+    # исключение на не-2xx ответ) — cleanup молча "завершался", оставляя
+    # клиента/машину/заявку в общей БД навсегда. Теперь явно подчищаем ЛЮБУЮ
+    # оставшуюся заявку по car_id перед удалением машины, а не только те,
+    # что вызывающий код указал по id.
+    all_car_ids = (car_ids or []) + ([car_id] if car_id is not None else [])
+    if all_car_ids:
+        async with async_session() as session:
+            leftover_ids = (
+                await session.execute(select(Booking.id).where(Booking.car_id.in_(all_car_ids)))
+            ).scalars().all()
+        for leftover_id in leftover_ids:
+            await delete_booking(leftover_id)
+
+    for cid in all_car_ids:
         await client.delete(f"/cars/{cid}")
     for cid in (client_ids or []) + ([client_id] if client_id is not None else []):
         await client.delete(f"/clients/{cid}")
@@ -877,7 +908,7 @@ async def test_issued_archives_booking_and_credits_revenue(client: AsyncClient) 
         # ...но остаётся в журнале для просмотра при необходимости.
         archive_resp = await client.get("/station/archive", params={"client_id": client_id})
         assert archive_resp.status_code == 200
-        entries = archive_resp.json()
+        entries = archive_resp.json()["items"]
         assert len(entries) == 1
         assert entries[0]["original_booking_id"] == booking_id
         assert entries[0]["status"] == "issued"
@@ -985,7 +1016,7 @@ async def test_approved_additional_work_credited_only_on_issue(client: AsyncClie
 
         archive = (
             await client.get("/station/archive", params={"client_id": client_id})
-        ).json()
+        ).json()["items"]
         # Услуга (500.00) + одобренная доп. работа (600.00), отклонённая
         # (10000.00) в сумму не входит.
         assert Decimal(archive[0]["total_price"]) == Decimal("1100.00")
@@ -1022,6 +1053,64 @@ async def test_cannot_accept_onto_post_before_scheduled_time(client: AsyncClient
         assert booking["service_ends_at"] is None
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_accepting_overdue_booking_that_collides_returns_409_not_500(client: AsyncClient) -> None:
+    # UI_description.md п.39 (2026-09-15, найденный пользователем реальный
+    # баг): попытка вручную принять на пост очень просроченную заявку, чьё
+    # продлённое от "сейчас" (см. п.35) occupancy пересекается с уже
+    # существующей следующей заявкой на том же посту, падала необработанным
+    # 500 — `await session.flush()` в этой функции стоял ДО защищённого
+    # `try`, тот же класс бага, что уже чинился в respond_additional_work
+    # (см. app/api/additional_works.py). Этот путь никто раньше не
+    # проверял отдельным тестом — обычный приём на пост вовремя до него не
+    # доходит.
+    from app.models import Booking, BookingStatus
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 68)
+    other_client_id = other_car_id = blocking_id = None
+    try:
+        await make_startable_now(booking_id)
+        booking = (await client.get(f"/bookings/{booking_id}")).json()
+        post_id = booking["post_id"]
+        end_at = datetime.fromisoformat(booking["end_at"].replace("Z", "+00:00"))
+
+        other_client_id, other_car_id = await make_client_car(client)
+        async with async_session() as session:
+            blocking = Booking(
+                client_id=other_client_id,
+                car_id=other_car_id,
+                post_id=post_id,
+                start_at=end_at,
+                end_at=end_at + timedelta(minutes=30),
+                status=BookingStatus.ACCEPTED,
+            )
+            session.add(blocking)
+            await session.commit()
+            await session.refresh(blocking)
+            blocking_id = blocking.id
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 409
+        assert "заняты" in resp.json()["detail"]
+
+        # Статус не сдвинулся — попытка была честно откачена, а не наполовину
+        # применена.
+        booking_after = (await client.get(f"/bookings/{booking_id}")).json()
+        assert booking_after["status"] == "accepted"
+    finally:
+        await cleanup(
+            client,
+            booking_id=booking_id,
+            car_id=car_id,
+            client_id=client_id,
+            service_id=service_id,
+            car_ids=[other_car_id] if other_car_id else None,
+            client_ids=[other_client_id] if other_client_id else None,
+        )
+        if blocking_id:
+            await delete_booking(blocking_id)
 
 
 @pytest.mark.asyncio
@@ -1078,7 +1167,7 @@ async def test_concurrent_cancel_vs_advance_never_corrupts_state(client: AsyncCl
         assert codes in ([200, 404], [200, 200])
 
         archive = await client.get("/station/archive", params={"client_id": client_id})
-        entries = archive.json()
+        entries = archive.json()["items"]
         assert len(entries) == 1  # заархивирована ровно один раз, не дважды
         # Финальный статус в архиве всегда совпадает с тем запросом, который
         # реально закоммитился последним (то есть вернул 200 последним по

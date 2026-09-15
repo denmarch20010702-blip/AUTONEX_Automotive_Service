@@ -37,7 +37,7 @@ import re
 from sqlalchemy import delete, select
 
 from app.db.session import async_session
-from app.models import Booking, Car, Client, Service, booking_services
+from app.models import AdditionalWork, Booking, Car, Client, Service, booking_services
 
 TEST_EMAIL_SUFFIX = "@example.com"
 # 2026-09-14: добавлен паттерн "Reminder Service <8 hex>" — тот же класс
@@ -113,6 +113,13 @@ async def main(apply: bool) -> None:
             await session.execute(
                 delete(booking_services).where(booking_services.c.booking_id.in_(booking_ids))
             )
+            # additional_works имеет FK на bookings без каскада (см.
+            # app/api/bookings.py) — без явного удаления здесь DELETE FROM
+            # bookings падал с IntegrityError, если у тестовой заявки было
+            # хоть одно предложение доп. работы (найдено на практике
+            # 2026-09-15, при отдельном инциденте с фоновым джобом отмены
+            # просроченных заявок).
+            await session.execute(delete(AdditionalWork).where(AdditionalWork.booking_id.in_(booking_ids)))
             await session.execute(delete(Booking).where(Booking.id.in_(booking_ids)))
 
         car_ids = [c.id for c in cars]

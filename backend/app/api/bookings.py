@@ -385,11 +385,6 @@ async def update_booking_status(
         if new_ends_at > booking.end_at:
             booking.end_at = new_ends_at
 
-    await session.flush()
-    # Снимок для ответа/события снимаем ДО удаления ниже — после удаления
-    # обращаться к атрибутам ORM-объекта уже нельзя.
-    snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
-
     # Оба терминальных статуса (issued/cancelled) убирают заявку из
     # активного списка — слот освобождается, как и раньше, но сама заявка
     # не пропадает: переезжает в BookingArchive для просмотра при
@@ -398,88 +393,103 @@ async def update_booking_status(
     # отменённую.
     completing = data.status == BookingStatus.ISSUED
     archiving = data.status in (BookingStatus.ISSUED, BookingStatus.CANCELLED)
-    if archiving:
-        total = sum((service.price for service in booking.services), start=Decimal("0"))
-
-        # additional_works имеет FK на bookings без каскада — без явного
-        # удаления его строк здесь DELETE FROM bookings падал с
-        # IntegrityError (500), если у заявки было хоть одно предложение
-        # доп. работы (найдено на практике 2026-09-13). Сохраняем снимком в
-        # архив по той же логике, что и services_snapshot, а не молча теряем.
-        additional_works = (
-            await session.execute(
-                select(AdditionalWork).where(AdditionalWork.booking_id == booking.id)
-            )
-        ).scalars().all()
-        additional_works_snapshot = [
-            {
-                "id": w.id,
-                "description": w.description,
-                "price": str(w.price),
-                "proposed_by": w.proposed_by.value,
-                "status": w.status.value,
-            }
-            for w in additional_works
-        ]
-
-        # UI_description.md п.14: деньги за согласованные доп. работы
-        # начисляются только при сдаче машины (issued), сверх суммы за
-        # изначальную услугу — не в момент согласования. Отклонённые/ещё не
-        # отвеченные (последних тут уже быть не может — см. guard выше) в
-        # сумму не входят.
-        if completing:
-            total += sum(
-                (w.price for w in additional_works if w.status == AdditionalWorkStatus.APPROVED),
-                start=Decimal("0"),
-            )
-            await session.execute(
-                update(StationStats)
-                .where(StationStats.id == STATION_STATS_ROW_ID)
-                .values(total_revenue=StationStats.total_revenue + total)
-            )
-            # UI_description.md п.31 (2026-09-14): "дата последнего
-            # обслуживания" на машине должна сама обновляться на дату, когда
-            # обслуживание реально прошло — `service_ends_at` — момент,
-            # рассчитанный автотаймером (C2), точнее отражает это, чем
-            # "сейчас" (когда станция нажала "выдать", может быть позже).
-            booking.car.last_service_date = (booking.service_ends_at or booking.end_at).date()
-            # B5: пробег на момент ЭТОГО ТО — основа для расчёта "пробег с
-            # последнего ТО" в проактивном предложении записи.
-            booking.car.mileage_at_last_service = booking.car.mileage
-        session.add(
-            BookingArchive(
-                original_booking_id=booking.id,
-                client_id=booking.client_id,
-                client_name=booking.client.name,
-                client_email=booking.client.email,
-                car_id=booking.car_id,
-                car_make=booking.car.make,
-                car_model=booking.car.model,
-                post_id=booking.post_id,
-                start_at=booking.start_at,
-                end_at=booking.end_at,
-                status=booking.status,
-                total_price=total,
-                services_snapshot=[
-                    {
-                        "id": s.id,
-                        "name": s.name,
-                        "price": str(s.price),
-                        "duration_minutes": s.duration_minutes,
-                    }
-                    for s in booking.services
-                ],
-                additional_works_snapshot=additional_works_snapshot,
-                created_at=booking.created_at,
-            )
-        )
-        await session.execute(
-            delete(booking_services).where(booking_services.c.booking_id == booking.id)
-        )
-        await session.execute(delete(AdditionalWork).where(AdditionalWork.booking_id == booking.id))
-        await session.delete(booking)
 
     try:
+        # Найденный баг (2026-09-15, всплыл на реальном тест-кейсе п.39):
+        # этот `flush()` раньше стоял ДО защищённого `try` ниже — если
+        # продление occupancy при приёме на пост (п.35 выше) пересекалось с
+        # чужой заявкой, EXCLUDE-ограничение падало прямо здесь необработанным
+        # 500, а не доходило до честного 409. Тот же класс бага, что уже
+        # чинился в respond_additional_work (см. app/api/additional_works.py,
+        # п.37) — здесь этот путь никто не проверял отдельным тестом, потому
+        # что обычно до него просто не доходило дело при штатном приёме на
+        # пост вовремя.
+        await session.flush()
+        # Снимок для ответа/события снимаем ДО удаления ниже — после удаления
+        # обращаться к атрибутам ORM-объекта уже нельзя.
+        snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
+
+        if archiving:
+            total = sum((service.price for service in booking.services), start=Decimal("0"))
+
+            # additional_works имеет FK на bookings без каскада — без явного
+            # удаления его строк здесь DELETE FROM bookings падал с
+            # IntegrityError (500), если у заявки было хоть одно предложение
+            # доп. работы (найдено на практике 2026-09-13). Сохраняем снимком в
+            # архив по той же логике, что и services_snapshot, а не молча теряем.
+            additional_works = (
+                await session.execute(
+                    select(AdditionalWork).where(AdditionalWork.booking_id == booking.id)
+                )
+            ).scalars().all()
+            additional_works_snapshot = [
+                {
+                    "id": w.id,
+                    "description": w.description,
+                    "price": str(w.price),
+                    "proposed_by": w.proposed_by.value,
+                    "status": w.status.value,
+                }
+                for w in additional_works
+            ]
+
+            # UI_description.md п.14: деньги за согласованные доп. работы
+            # начисляются только при сдаче машины (issued), сверх суммы за
+            # изначальную услугу — не в момент согласования. Отклонённые/ещё не
+            # отвеченные (последних тут уже быть не может — см. guard выше) в
+            # сумму не входят.
+            if completing:
+                total += sum(
+                    (w.price for w in additional_works if w.status == AdditionalWorkStatus.APPROVED),
+                    start=Decimal("0"),
+                )
+                await session.execute(
+                    update(StationStats)
+                    .where(StationStats.id == STATION_STATS_ROW_ID)
+                    .values(total_revenue=StationStats.total_revenue + total)
+                )
+                # UI_description.md п.31 (2026-09-14): "дата последнего
+                # обслуживания" на машине должна сама обновляться на дату, когда
+                # обслуживание реально прошло — `service_ends_at` — момент,
+                # рассчитанный автотаймером (C2), точнее отражает это, чем
+                # "сейчас" (когда станция нажала "выдать", может быть позже).
+                booking.car.last_service_date = (booking.service_ends_at or booking.end_at).date()
+                # B5: пробег на момент ЭТОГО ТО — основа для расчёта "пробег с
+                # последнего ТО" в проактивном предложении записи.
+                booking.car.mileage_at_last_service = booking.car.mileage
+            session.add(
+                BookingArchive(
+                    original_booking_id=booking.id,
+                    client_id=booking.client_id,
+                    client_name=booking.client.name,
+                    client_email=booking.client.email,
+                    car_id=booking.car_id,
+                    car_make=booking.car.make,
+                    car_model=booking.car.model,
+                    post_id=booking.post_id,
+                    start_at=booking.start_at,
+                    end_at=booking.end_at,
+                    status=booking.status,
+                    total_price=total,
+                    services_snapshot=[
+                        {
+                            "id": s.id,
+                            "name": s.name,
+                            "price": str(s.price),
+                            "duration_minutes": s.duration_minutes,
+                        }
+                        for s in booking.services
+                    ],
+                    additional_works_snapshot=additional_works_snapshot,
+                    created_at=booking.created_at,
+                )
+            )
+            await session.execute(
+                delete(booking_services).where(booking_services.c.booking_id == booking.id)
+            )
+            await session.execute(delete(AdditionalWork).where(AdditionalWork.booking_id == booking.id))
+            await session.delete(booking)
+
         await session.commit()
     except IntegrityError:
         # Расширение `end_at` выше (п.35) в редком случае может пересечься

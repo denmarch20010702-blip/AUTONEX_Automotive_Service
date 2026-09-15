@@ -22,6 +22,7 @@ import { useBookingEvents } from "../api/events";
 import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
 import { NotificationDot } from "../components/NotificationDot";
+import { Pagination } from "../components/Pagination";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
 import { AddServiceForm } from "../components/station/AddServiceForm";
@@ -39,9 +40,13 @@ export function StationPage() {
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [revenue, setRevenue] = useState<string | null>(null);
   const [archive, setArchive] = useState<ArchivedBooking[]>([]);
+  const [archiveTotal, setArchiveTotal] = useState(0);
+  const [archivePage, setArchivePage] = useState(1);
   const [showArchive, setShowArchive] = useState(false);
   const [tireSets, setTireSets] = useState<TireSet[]>([]);
   const [tireArchive, setTireArchive] = useState<TireSetArchiveEntry[]>([]);
+  const [tireArchiveTotal, setTireArchiveTotal] = useState(0);
+  const [tireArchivePage, setTireArchivePage] = useState(1);
   const [showTireArchive, setShowTireArchive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
@@ -71,10 +76,13 @@ export function StationPage() {
   }, []);
 
   const reloadArchive = useCallback(() => {
-    listArchive()
-      .then(setArchive)
+    listArchive(undefined, archivePage)
+      .then((res) => {
+        setArchive(res.items);
+        setArchiveTotal(res.total);
+      })
       .catch((err) => setError(err.message));
-  }, []);
+  }, [archivePage]);
 
   const reloadClients = useCallback(() => {
     listAllClients()
@@ -89,10 +97,13 @@ export function StationPage() {
   }, []);
 
   const reloadTireArchive = useCallback(() => {
-    listTireSetArchive()
-      .then(setTireArchive)
+    listTireSetArchive(undefined, tireArchivePage)
+      .then((res) => {
+        setTireArchive(res.items);
+        setTireArchiveTotal(res.total);
+      })
       .catch((err) => setError(err.message));
-  }, []);
+  }, [tireArchivePage]);
 
   useEffect(() => {
     reloadBookings();
@@ -164,7 +175,7 @@ export function StationPage() {
     <div>
       <h1 className="step-title">Экран станции</h1>
 
-      <PostsBoard bookings={bookings ?? []} />
+      <PostsBoard bookings={bookings ?? []} clients={clients} cars={cars} />
 
       <div
         style={{
@@ -330,20 +341,32 @@ export function StationPage() {
         <div className="panel-header" style={{ marginTop: "1rem" }}>
           <h3 style={{ margin: 0 }}>Журнал приёма и выдачи шин</h3>
           <button type="button" className="ghost-button" onClick={() => setShowTireArchive((v) => !v)}>
-            {showTireArchive ? "Скрыть" : `Показать (${tireArchive.length})`}
+            {showTireArchive ? "Скрыть" : `Показать (${tireArchiveTotal})`}
           </button>
         </div>
-        {showTireArchive && <TireSetArchiveTable entries={tireArchive} />}
+        {showTireArchive && (
+          <>
+            <Pagination page={tireArchivePage} total={tireArchiveTotal} pageSize={50} onChange={setTireArchivePage} />
+            <TireSetArchiveTable entries={tireArchive} />
+            <Pagination page={tireArchivePage} total={tireArchiveTotal} pageSize={50} onChange={setTireArchivePage} />
+          </>
+        )}
       </div>
 
       <div className="panel">
         <div className="panel-header">
           <h2>Журнал</h2>
           <button type="button" className="ghost-button" onClick={() => setShowArchive((v) => !v)}>
-            {showArchive ? "Скрыть" : `Показать (${archive.length})`}
+            {showArchive ? "Скрыть" : `Показать (${archiveTotal})`}
           </button>
         </div>
-        {showArchive && <ArchiveTable entries={archive} />}
+        {showArchive && (
+          <>
+            <Pagination page={archivePage} total={archiveTotal} pageSize={50} onChange={setArchivePage} />
+            <ArchiveTable entries={archive} />
+            <Pagination page={archivePage} total={archiveTotal} pageSize={50} onChange={setArchivePage} />
+          </>
+        )}
       </div>
 
       <EventLog events={events} />

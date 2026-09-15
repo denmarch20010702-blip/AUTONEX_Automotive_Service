@@ -663,7 +663,7 @@ async def test_cancelling_booking_with_additional_work_does_not_crash(client: As
         assert resp.status_code == 200  # раньше здесь был 500
 
         archive = await client.get("/station/archive", params={"client_id": client_id})
-        entries = archive.json()
+        entries = archive.json()["items"]
         assert len(entries) == 1
         snapshot = entries[0]["additional_works_snapshot"]
         assert len(snapshot) == 1
