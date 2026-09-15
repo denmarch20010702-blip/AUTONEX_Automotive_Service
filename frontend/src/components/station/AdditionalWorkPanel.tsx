@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { listAdditionalWorks, proposeAdditionalWork, type AdditionalWork, type Service } from "../../api/client";
+import { formatDuration } from "../../utils/duration";
 
 const STATUS_LABEL: Record<AdditionalWork["status"], string> = {
   pending: "ожидает ответа",
@@ -55,7 +56,7 @@ export function AdditionalWorkPanel({
       {error && <div className="error-banner">{error}</div>}
       {works.map((w) => (
         <div key={w.id}>
-          {w.description} ({w.price} ₽) —{" "}
+          {w.description} ({w.price} ₽, {formatDuration(w.duration_minutes)}) —{" "}
           <span
             style={{
               color:
@@ -87,7 +88,7 @@ export function AdditionalWorkPanel({
               disabled={busyServiceId !== null}
               onClick={() => propose(s.id)}
             >
-              {s.name} — {s.price} ₽
+              {s.name} — {s.price} ₽, {formatDuration(s.duration_minutes)}
             </button>
           ))}
           <button type="button" className="ghost-button" onClick={() => setPicking(false)}>

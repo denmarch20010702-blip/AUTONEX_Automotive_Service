@@ -1,4 +1,5 @@
 import type { Service } from "../../api/client";
+import { formatDuration } from "../../utils/duration";
 import { iconForService } from "../icons";
 
 export function ServiceTiles({
@@ -24,7 +25,11 @@ export function ServiceTiles({
           >
             <Icon />
             <span>{service.name}</span>
-            <span className="price">{service.price} ₽</span>
+            {/* UI_description.md п.34: в плитке должна быть видна и цена,
+                и длительность услуги — раньше показывалась только цена. */}
+            <span className="price">
+              {service.price} ₽ · {formatDuration(service.duration_minutes)}
+            </span>
           </button>
         );
       })}

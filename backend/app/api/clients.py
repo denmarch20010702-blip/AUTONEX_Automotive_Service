@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_session
 from app.models import Client
 from app.schemas.client import ClientCreate, ClientRead, ClientUpdate
+from app.services.maintenance_suggestions import get_maintenance_suggestions, slots_are_scarce
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
@@ -65,6 +66,19 @@ async def update_client(
         raise HTTPException(status_code=409, detail="Клиент с таким email уже существует")
     await session.refresh(client)
     return client
+
+
+@router.get("/{client_id}/maintenance-suggestions")
+async def maintenance_suggestions(
+    client_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    # B5: проактивное предложение записи по сроку/пробегу ТО, плюс сигнал
+    # "мест мало — лучше не откладывать" (пометка пользователя 2026-09-11).
+    if await session.get(Client, client_id) is None:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    suggestions = await get_maintenance_suggestions(session, client_id)
+    scarce = await slots_are_scarce(session) if suggestions else False
+    return {"suggestions": suggestions, "slots_scarce": scarce}
 
 
 @router.delete("/{client_id}", status_code=204, response_model=None)

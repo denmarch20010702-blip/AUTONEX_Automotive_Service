@@ -20,6 +20,12 @@ class AdditionalWorkRespond(BaseModel):
     status: AdditionalWorkStatus
 
 
+class AdditionalWorkSchedule(BaseModel):
+    # UI_description.md п.37: клиент выбрал слот из мини-календаря для
+    # отдельного визита именно на эту доп. работу.
+    start_at: datetime
+
+
 class AdditionalWorkRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -28,6 +34,8 @@ class AdditionalWorkRead(BaseModel):
     description: str
     price: Decimal
     duration_minutes: int
+    service_id: int | None
+    scheduled_booking_id: int | None
     proposed_by: ProposedBy
     status: AdditionalWorkStatus
     created_at: datetime

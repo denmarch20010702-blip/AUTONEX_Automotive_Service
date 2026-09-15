@@ -4,10 +4,12 @@ import { useNavigate } from "react-router-dom";
 import {
   deleteCar,
   deleteClient,
+  getMaintenanceSuggestions,
   issueTireSet,
   listArchive,
   listBookings,
   listCars,
+  listTireSetArchive,
   listTireSets,
   storeTireSet,
   updateBookingStatus,
@@ -17,16 +19,19 @@ import {
   type Booking,
   type CarInfo,
   type ClientInfo,
+  type MaintenanceSuggestion,
   type TireSet,
+  type TireSetArchiveEntry,
 } from "../api/client";
 import { useBookingEvents } from "../api/events";
 import { AddCarForm } from "../components/booking/AddCarForm";
 import { CAR_MAKES, modelsForMake } from "../data/carCatalog";
 import { ClientAdditionalWorks } from "../components/booking/ClientAdditionalWorks";
+import { TireSetArchiveTable } from "../components/TireSetArchiveTable";
 import { IdentifyForm } from "../components/booking/IdentifyForm";
 import { RescheduleControl } from "../components/booking/RescheduleControl";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
-import { Countdown } from "../components/Countdown";
+import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { CarIcon, PlusIcon } from "../components/icons";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { useClientSession } from "../session/ClientSessionContext";
@@ -351,6 +356,12 @@ export function CabinetPage() {
   const [history, setHistory] = useState<ArchivedBooking[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [tireSets, setTireSets] = useState<TireSet[]>([]);
+  const [tireHistory, setTireHistory] = useState<TireSetArchiveEntry[]>([]);
+  const [showTireHistory, setShowTireHistory] = useState(false);
+  const [maintenance, setMaintenance] = useState<{
+    suggestions: MaintenanceSuggestion[];
+    slots_scarce: boolean;
+  }>({ suggestions: [], slots_scarce: false });
   const [error, setError] = useState<string | null>(null);
   const [addingCar, setAddingCar] = useState(false);
   const events = useBookingEvents();
@@ -361,6 +372,12 @@ export function CabinetPage() {
     listBookings(client.id).then(setBookings).catch((err) => setError(err.message));
     listArchive(client.id).then(setHistory).catch((err) => setError(err.message));
     listTireSets({ clientId: client.id }).then(setTireSets).catch((err) => setError(err.message));
+    listTireSetArchive(client.id).then(setTireHistory).catch((err) => setError(err.message));
+    // B5: проактивное предложение — не критично для основного функционала
+    // кабинета, поэтому тихо игнорируем ошибку, а не показываем баннер.
+    getMaintenanceSuggestions(client.id)
+      .then(setMaintenance)
+      .catch(() => {});
   }, [client]);
 
   useEffect(() => {
@@ -467,6 +484,28 @@ export function CabinetPage() {
         );
       })()}
 
+      {/* B5: проактивное предложение записи по сроку/пробегу ТО, плюс
+          пометка пользователя — если мест мало, стоит поторопиться. */}
+      {maintenance.suggestions.length > 0 && (
+        <div className="panel" style={{ background: "var(--color-primary)", textAlign: "center" }}>
+          {maintenance.suggestions.map((s) => (
+            <p key={s.car_id} style={{ margin: "0.25rem 0" }}>
+              {s.make} {s.model}: похоже, пора на ТО (
+              {s.reason === "time"
+                ? `не было ${s.months_since_service} мес.`
+                : `пробег +${s.km_since_service?.toLocaleString("ru-RU")} км с последнего`}
+              ).{" "}
+              {maintenance.slots_scarce && (
+                <b>Свободных мест становится мало — рекомендуем не откладывать.</b>
+              )}
+            </p>
+          ))}
+          <button type="button" className="primary-button" onClick={() => navigate("/")}>
+            Записаться
+          </button>
+        </div>
+      )}
+
       <div className="panel">
         <div className="panel-header">
           <h2>Мои автомобили</h2>
@@ -532,6 +571,13 @@ export function CabinetPage() {
             </table>
           </div>
         )}
+        <div className="panel-header" style={{ marginTop: "1rem" }}>
+          <h3 style={{ margin: 0 }}>История хранения шин</h3>
+          <button type="button" className="ghost-button" onClick={() => setShowTireHistory((v) => !v)}>
+            {showTireHistory ? "Скрыть" : `Показать (${tireHistory.length})`}
+          </button>
+        </div>
+        {showTireHistory && <TireSetArchiveTable entries={tireHistory} />}
       </div>
 
       <div className="panel">
@@ -563,6 +609,7 @@ export function CabinetPage() {
                       {b.status === "on_post" && b.service_ends_at && (
                         <Countdown targetIso={b.service_ends_at} />
                       )}
+                      {b.status === "accepted" && <UpcomingCountdown targetIso={b.start_at} />}
                     </td>
                     <td>
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>

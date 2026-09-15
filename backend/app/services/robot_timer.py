@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -83,7 +84,21 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
         for w in newly_approved:
             w.execution_started = True
         booking.status = BookingStatus.ON_POST
-        booking.service_ends_at = datetime.now(timezone.utc) + timedelta(minutes=extra_minutes)
+        new_ends_at = datetime.now(timezone.utc) + timedelta(minutes=extra_minutes)
+        booking.service_ends_at = new_ends_at
+        # UI_description.md п.35 (2026-09-14): реальный найденный баг —
+        # `end_at` заявки не продлевался вместе с `service_ends_at`, а
+        # именно `end_at` (не `service_ends_at`) используется во всех
+        # проверках занятости поста/машины (EXCLUDE-ограничения A4,
+        # `car_is_free`/`get_available_slots`). Пока доп. работа реально
+        # выполнялась на посту, по данным этих проверок пост/машина уже
+        # считались свободными сразу после ИЗНАЧАЛЬНОГО `end_at` — можно
+        # было создать вторую заявку на тот же пост или ту же машину на это
+        # же время. Синхронизируем `end_at` с новым концом занятости, чтобы
+        # EXCLUDE-ограничения на уровне БД реально защищали продлённый
+        # интервал, а не только исходный.
+        if new_ends_at > booking.end_at:
+            booking.end_at = new_ends_at
         schedule_auto_advance(booking.id, timedelta(minutes=extra_minutes))
         return
 
@@ -108,7 +123,15 @@ async def _auto_advance(booking_id: int) -> None:
             return
 
         await resolve_next_step(session, booking)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Крайне редкий случай (п.35): продлённый интервал пересёкся с
+            # чужой заявкой. Автотаймер работает в фоне без запроса, кому
+            # вернуть 409 — просто откатываем, заявка останется в 'on_post'
+            # без нового таймера; станция увидит это и разберётся вручную.
+            await session.rollback()
+            return
         await session.refresh(booking)
         publish(
             "booking_status_changed",

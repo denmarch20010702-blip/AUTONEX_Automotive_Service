@@ -20,6 +20,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.services import events as events_module
+from helpers import make_startable_now
 from tests.test_api_bookings import cleanup, make_client_car, make_service
 
 
@@ -128,6 +129,7 @@ async def test_status_change_publishes_booking_status_changed(client: AsyncClien
     )
     booking_id = create_resp.json()["id"]
     try:
+        await make_startable_now(booking_id)
         with patch("app.api.bookings.publish") as mock_publish:
             resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200

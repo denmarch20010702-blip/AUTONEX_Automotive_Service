@@ -39,6 +39,20 @@ export interface CarInfo {
   last_service_date: string | null;
 }
 
+// UI_description.md п.37: некоторые ошибки backend несут не просто текст,
+// а структурированные данные (например `needs_separate_visit` — предложение
+// показать мини-календарь вместо голого сообщения об ошибке). Обычный
+// `Error.message` остаётся человекочитаемым для мест, которым это не важно
+// (просто показывают текст в error-banner); `detail` — сырое тело для тех,
+// кому нужно решение, а не просто текст.
+export class ApiError extends Error {
+  detail: unknown;
+  constructor(message: string, detail: unknown) {
+    super(message);
+    this.detail = detail;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -46,7 +60,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail ?? `Запрос не удался: ${response.status}`);
+    const detail = body.detail;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && "message" in detail
+          ? String((detail as { message: unknown }).message)
+          : `Запрос не удался: ${response.status}`;
+    throw new ApiError(message, detail);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -205,6 +226,23 @@ export function deleteClient(id: number): Promise<void> {
   return request<void>(`/clients/${id}`, { method: "DELETE" });
 }
 
+export interface MaintenanceSuggestion {
+  car_id: number;
+  make: string;
+  model: string;
+  reason: "time" | "mileage";
+  months_since_service?: number;
+  km_since_service?: number;
+}
+
+// B5: проактивное предложение записи по сроку/пробегу ТО, плюс сигнал
+// "мест мало — не откладывай запись".
+export function getMaintenanceSuggestions(
+  clientId: number,
+): Promise<{ suggestions: MaintenanceSuggestion[]; slots_scarce: boolean }> {
+  return request(`/clients/${clientId}/maintenance-suggestions`);
+}
+
 export function listAllClients(): Promise<ClientInfo[]> {
   return request<ClientInfo[]>("/clients");
 }
@@ -259,15 +297,50 @@ export function issueTireSet(id: number): Promise<TireSet> {
   return request<TireSet>(`/tire-sets/${id}/issue`, { method: "POST" });
 }
 
+export interface TireSetArchiveEntry {
+  id: number;
+  original_tire_set_id: number;
+  client_id: number;
+  client_name: string;
+  client_email: string;
+  car_id: number;
+  car_make: string;
+  car_model: string;
+  stored_at: string;
+  issued_at: string;
+  archived_at: string;
+}
+
+// Журнал приёма/выдачи шин — выданный комплект переезжает сюда и удаляется
+// из живой `tire-sets` (см. UI_description.md п.28, тот же принцип, что и
+// журнал заявок).
+export function listTireSetArchive(clientId?: number): Promise<TireSetArchiveEntry[]> {
+  return request<TireSetArchiveEntry[]>(
+    clientId ? `/tire-sets/archive?client_id=${clientId}` : "/tire-sets/archive",
+  );
+}
+
 export interface AdditionalWork {
   id: number;
   booking_id: number;
   description: string;
   price: string;
   duration_minutes: number;
+  service_id: number | null;
+  scheduled_booking_id: number | null;
   proposed_by: "mechanic" | "ai";
   status: "pending" | "approved" | "declined";
   created_at: string;
+}
+
+// UI_description.md п.37: структура ошибки при попытке одобрить доп. работу,
+// когда сразу нет места (продление пересеклось бы со следующей заявкой на
+// том же посту) — see app/api/additional_works.py::respond_additional_work.
+export interface NeedsSeparateVisit {
+  message: string;
+  needs_separate_visit: true;
+  service_id: number | null;
+  duration_minutes: number;
 }
 
 // Согласование доп. работ (B2) — предлагается сразу при обнаружении;
@@ -298,5 +371,15 @@ export function respondAdditionalWork(id: number, status: "approved" | "declined
   return request<AdditionalWork>(`/additional-works/${id}/respond`, {
     method: "POST",
     body: JSON.stringify({ status }),
+  });
+}
+
+// UI_description.md п.37: клиент выбрал слот из мини-календаря для
+// отдельного визита именно на эту доп. работу — вызывается после того, как
+// respondAdditionalWork() вернул ApiError с detail.needs_separate_visit.
+export function scheduleAdditionalWork(id: number, startAt: string): Promise<AdditionalWork> {
+  return request<AdditionalWork>(`/additional-works/${id}/schedule`, {
+    method: "POST",
+    body: JSON.stringify({ start_at: startAt }),
   });
 }

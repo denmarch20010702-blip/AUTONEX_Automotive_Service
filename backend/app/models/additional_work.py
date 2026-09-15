@@ -43,6 +43,22 @@ class AdditionalWork(Base):
     # новой доп. работы после уже отработанной старой задвоило бы её
     # длительность при пересчёте суммы для таймера.
     execution_started: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # UI_description.md п.37 (2026-09-14): если на посту сразу нет места
+    # (продление занятости пересеклось бы со следующей заявкой), клиенту
+    # предлагается отдельный будущий визит именно на эту услугу — для этого
+    # нужна настоящая ссылка на каталог (снимков description/price/duration
+    # выше недостаточно, чтобы создать новую `Booking`). `ondelete=SET NULL`,
+    # а не CASCADE/RESTRICT — если услугу позже удалят из каталога, история
+    # предложения не должна пропадать, отдельный визит просто станет
+    # невозможен (см. schedule_additional_work_separately).
+    service_id: Mapped[int | None] = mapped_column(
+        ForeignKey("services.id", ondelete="SET NULL"), nullable=True
+    )
+    # Заполняется, когда клиент выбрал время отдельного визита (см. выше) —
+    # ссылка на новую самостоятельную заявку именно на эту доп. работу.
+    scheduled_booking_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True
+    )
     proposed_by: Mapped[ProposedBy] = mapped_column(Enum(ProposedBy, name="proposed_by"))
     status: Mapped[AdditionalWorkStatus] = mapped_column(
         Enum(AdditionalWorkStatus, name="additional_work_status"),
@@ -52,4 +68,7 @@ class AdditionalWork(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    booking: Mapped["Booking"] = relationship()
+    # Явный foreign_keys нужен, потому что теперь в этой таблице два FK на
+    # bookings.id (booking_id и scheduled_booking_id) — без этого SQLAlchemy
+    # не может сам угадать, какой из них тут имеется в виду.
+    booking: Mapped["Booking"] = relationship(foreign_keys=[booking_id])

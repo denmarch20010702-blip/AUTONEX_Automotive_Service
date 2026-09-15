@@ -40,7 +40,10 @@ from app.db.session import async_session
 from app.models import Booking, Car, Client, Service, booking_services
 
 TEST_EMAIL_SUFFIX = "@example.com"
-TEST_SERVICE_NAME = re.compile(r"^Услуга [0-9a-f]{32}$")
+# 2026-09-14: добавлен паттерн "Reminder Service <8 hex>" — тот же класс
+# сиротских услуг, оставленных `tests/test_reminders.py::make_booking`
+# (найдено и исправлено пользователем в этой же сессии, см. DECISIONS_LOG.md).
+TEST_SERVICE_NAME = re.compile(r"^Услуга [0-9a-f]{32}$|^Reminder Service [0-9a-f]{8}$")
 
 
 async def find_targets(session):

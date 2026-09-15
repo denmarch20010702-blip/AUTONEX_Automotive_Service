@@ -315,6 +315,21 @@ async def update_booking_status(
             detail=f"Нельзя перейти из статуса '{booking.status.value}' в '{data.status.value}'",
         )
 
+    # Реальный найденный баг (2026-09-14): ничто не мешало принять машину на
+    # пост (и запустить автотаймер обслуживания, п.7/C2) намного раньше
+    # назначенного `start_at` — таймер отталкивается от момента нажатия
+    # кнопки, а не от расписания, поэтому заявка "работала" ещё до
+    # назначенного времени визита. Машина физически не может быть принята в
+    # обслуживание до того, как настало её время.
+    if data.status == BookingStatus.ON_POST and datetime.now(timezone.utc) < booking.start_at:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Нельзя принять на пост раньше назначенного времени "
+                f"({booking.start_at.isoformat()})"
+            ),
+        )
+
     # Заметка пользователя (B2, уточнение 2026-09-13): пока клиент не принял
     # или не отклонил предложенную доп. работу, статус заявки дальше не
     # меняется — кроме отмены самой заявки (в любой момент) и входа в само
@@ -357,7 +372,18 @@ async def update_booking_status(
     # только внутри задачи планировщика.
     on_post_duration_minutes = sum(s.duration_minutes for s in booking.services)
     if data.status == BookingStatus.ON_POST:
-        booking.service_ends_at = datetime.now(timezone.utc) + timedelta(minutes=on_post_duration_minutes)
+        new_ends_at = datetime.now(timezone.utc) + timedelta(minutes=on_post_duration_minutes)
+        booking.service_ends_at = new_ends_at
+        # UI_description.md п.35 (2026-09-14): если станция принимает машину
+        # на пост позже запланированного `start_at` (реальная задержка), то
+        # реальное занятие поста заканчивается позже, чем `end_at`,
+        # рассчитанный при создании заявки — а именно `end_at` проверяют
+        # EXCLUDE-ограничения A4/`car_is_free`/`get_available_slots`. Без
+        # этой синхронизации новая заявка могла бы занять тот же пост или ту
+        # же машину на время, которое по факту ещё занято. Сужать `end_at`
+        # никогда не нужно — только расширять.
+        if new_ends_at > booking.end_at:
+            booking.end_at = new_ends_at
 
     await session.flush()
     # Снимок для ответа/события снимаем ДО удаления ниже — после удаления
@@ -417,6 +443,9 @@ async def update_booking_status(
             # рассчитанный автотаймером (C2), точнее отражает это, чем
             # "сейчас" (когда станция нажала "выдать", может быть позже).
             booking.car.last_service_date = (booking.service_ends_at or booking.end_at).date()
+            # B5: пробег на момент ЭТОГО ТО — основа для расчёта "пробег с
+            # последнего ТО" в проактивном предложении записи.
+            booking.car.mileage_at_last_service = booking.car.mileage
         session.add(
             BookingArchive(
                 original_booking_id=booking.id,
@@ -450,7 +479,14 @@ async def update_booking_status(
         await session.execute(delete(AdditionalWork).where(AdditionalWork.booking_id == booking.id))
         await session.delete(booking)
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Расширение `end_at` выше (п.35) в редком случае может пересечься
+        # с чужой заявкой, которая успела встать в промежуток раньше —
+        # честный 409 вместо 500, тот же принцип, что и в create_booking.
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Пост или машина заняты на продлённое время")
 
     publish("booking_status_changed", snapshot)
     if completing:

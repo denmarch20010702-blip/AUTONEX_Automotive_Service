@@ -8,6 +8,7 @@ from httpx import AsyncClient
 
 from app.db.session import async_session
 from app.models import Booking
+from helpers import make_startable_now
 
 
 def unique_email() -> str:
@@ -602,26 +603,51 @@ async def test_booking_with_empty_service_ids_rejected(client: AsyncClient) -> N
 
 
 async def make_booking(client: AsyncClient, days_offset: int) -> tuple[int, int, int, int]:
-    client_id, car_id = await make_client_car(client)
-    service_id = await make_service(client, duration_minutes=30)
-    day = date.today() + timedelta(days=days_offset)
-    slot = (
-        await client.get(
-            "/bookings/available-slots",
-            params={"service_ids": [service_id], "date": day_start_iso(day)},
+    # Тот же класс бага, что и в `test_reminders.py::make_booking`
+    # (2026-09-14, замечено пользователем — тестовые клиенты/машины/услуги
+    # остаются в живой БД навсегда): раньше client_id/car_id/service_id
+    # создавались до входа вызывающего теста в его собственный `try`, и если
+    # следующий шаг (поиск слота на конкретный день, `.json()[0]`, или
+    # `assert resp.status_code == 201`) кидал исключение — а с далёким, но
+    # ФИКСИРОВАННЫМ днём это реально происходит, если этот день уже занят
+    # другой заявкой (в т.ч. оставшейся от прежнего "утёкшего" прогона) —
+    # уже созданные записи никто не подчищал: `finally` вызывающего теста
+    # просто не запускался. Теперь хелпер сам чистит за собой при любой
+    # ошибке внутри себя.
+    client_id = car_id = service_id = None
+    try:
+        client_id, car_id = await make_client_car(client)
+        service_id = await make_service(client, duration_minutes=30)
+        day = date.today() + timedelta(days=days_offset)
+        slots = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
+            )
+        ).json()
+        if not slots:
+            pytest.skip(f"на день +{days_offset} не осталось свободных слотов — занято живыми данными")
+        resp = await client.post(
+            "/bookings",
+            json={
+                "client_id": client_id,
+                "car_id": car_id,
+                "start_at": slots[0]["start_at"],
+                "service_ids": [service_id],
+            },
         )
-    ).json()[0]
-    resp = await client.post(
-        "/bookings",
-        json={
-            "client_id": client_id,
-            "car_id": car_id,
-            "start_at": slot["start_at"],
-            "service_ids": [service_id],
-        },
-    )
-    assert resp.status_code == 201
-    return client_id, car_id, service_id, resp.json()["id"]
+        assert resp.status_code == 201
+        return client_id, car_id, service_id, resp.json()["id"]
+    except BaseException:
+        # BaseException, не Exception — `pytest.skip()` поднимает `Skipped`,
+        # который наследуется от BaseException, а не Exception.
+        if car_id is not None:
+            await client.delete(f"/cars/{car_id}")
+        if client_id is not None:
+            await client.delete(f"/clients/{client_id}")
+        if service_id is not None:
+            await client.delete(f"/catalog/{service_id}")
+        raise
 
 
 @pytest.mark.asyncio
@@ -639,6 +665,7 @@ async def test_status_happy_path_through_awaiting_approval(client: AsyncClient) 
     )
     extra_id = extra_resp.json()["id"]
     try:
+        await make_startable_now(booking_id)
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200
 
@@ -697,6 +724,7 @@ async def test_status_happy_path_skipping_approval(client: AsyncClient) -> None:
     # awaiting_approval — развилка, а не обязательная стадия.
     client_id, car_id, service_id, booking_id = await make_booking(client, 51)
     try:
+        await make_startable_now(booking_id)
         for target in ("on_post", "ready", "issued"):
             resp = await client.post(f"/bookings/{booking_id}/status", json={"status": target})
             assert resp.status_code == 200
@@ -711,6 +739,7 @@ async def test_status_happy_path_skipping_approval(client: AsyncClient) -> None:
 async def test_status_invalid_transitions_rejected(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 52)
     try:
+        await make_startable_now(booking_id)
         # Пропуск стадии: accepted -> ready напрямую.
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "ready"})
         assert resp.status_code == 409
@@ -776,6 +805,7 @@ async def test_cancel_from_accepted_frees_the_slot(client: AsyncClient) -> None:
 async def test_cancel_allowed_from_on_post_and_awaiting_approval(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 54)
     try:
+        await make_startable_now(booking_id)
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200
 
@@ -807,6 +837,7 @@ async def test_cancel_not_allowed_from_issued(client: AsyncClient) -> None:
     # заявки для отмены уже физически не существует.
     client_id, car_id, service_id, booking_id = await make_booking(client, 55)
     try:
+        await make_startable_now(booking_id)
         for status in ("on_post", "ready", "issued"):
             resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
             assert resp.status_code == 200
@@ -827,6 +858,7 @@ async def test_cancel_not_allowed_from_issued(client: AsyncClient) -> None:
 async def test_issued_archives_booking_and_credits_revenue(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 56)
     try:
+        await make_startable_now(booking_id)
         stats_before = (await client.get("/station/stats")).json()
 
         for status in ("on_post", "ready"):
@@ -868,6 +900,7 @@ async def test_issued_updates_car_last_service_date(client: AsyncClient) -> None
     # прошло, а не оставаться пустой/старой после выдачи.
     client_id, car_id, service_id, booking_id = await make_booking(client, 60)
     try:
+        await make_startable_now(booking_id)
         car_before = (await client.get(f"/cars/{car_id}")).json()
         assert car_before["last_service_date"] is None
 
@@ -902,6 +935,7 @@ async def test_approved_additional_work_credited_only_on_issue(client: AsyncClie
         )
     ).json()["id"]
     try:
+        await make_startable_now(booking_id)
         stats_before = (await client.get("/station/stats")).json()
 
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
@@ -968,6 +1002,29 @@ async def test_approved_additional_work_credited_only_on_issue(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_cannot_accept_onto_post_before_scheduled_time(client: AsyncClient) -> None:
+    # Реальный найденный баг (2026-09-14): ничто не мешало принять машину на
+    # пост (и запустить автотаймер обслуживания) намного раньше назначенного
+    # `start_at` — таймер отталкивался от момента нажатия кнопки, а не от
+    # расписания, поэтому заявка "работала" ещё до фактического приезда
+    # клиента. `make_booking` намеренно создаёт заявку на далёкий будущий
+    # слот (чтобы не пересекаться с другими тестами) — здесь она НЕ должна
+    # приниматься на пост прямо сейчас.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 67)
+    try:
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 409
+        assert "раньше назначенного времени" in resp.json()["detail"]
+
+        # Статус не сдвинулся и таймер не запущен.
+        booking = (await client.get(f"/bookings/{booking_id}")).json()
+        assert booking["status"] == "accepted"
+        assert booking["service_ends_at"] is None
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
 async def test_status_nonexistent_booking_returns_404(client: AsyncClient) -> None:
     resp = await client.post("/bookings/999999999/status", json={"status": "on_post"})
     assert resp.status_code == 404
@@ -977,6 +1034,7 @@ async def test_status_nonexistent_booking_returns_404(client: AsyncClient) -> No
 async def test_status_concurrent_same_transition_only_one_succeeds(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 53)
     try:
+        await make_startable_now(booking_id)
         responses = await asyncio.gather(
             client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"}),
             client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"}),
@@ -1005,6 +1063,7 @@ async def test_concurrent_cancel_vs_advance_never_corrupts_state(client: AsyncCl
     # реально был последним применённым переходом.
     client_id, car_id, service_id, booking_id = await make_booking(client, 57)
     try:
+        await make_startable_now(booking_id)
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200
 
@@ -1040,6 +1099,7 @@ async def test_concurrent_double_issue_credits_revenue_exactly_once(client: Asyn
     # дважды и никогда не начисляет revenue дважды.
     client_id, car_id, service_id, booking_id = await make_booking(client, 58)
     try:
+        await make_startable_now(booking_id)
         for status in ("on_post", "ready"):
             resp = await client.post(f"/bookings/{booking_id}/status", json={"status": status})
             assert resp.status_code == 200
@@ -1117,6 +1177,7 @@ async def test_reschedule_excludes_own_old_slot_from_car_conflict(client: AsyncC
 async def test_reschedule_blocked_once_on_post(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 62)
     try:
+        await make_startable_now(booking_id)
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200
 
@@ -1175,6 +1236,7 @@ async def test_station_actionable_count_reflects_bookings_needing_a_decision(cli
     # от захода на страницу.
     client_id, car_id, service_id, booking_id = await make_booking(client, 66)
     try:
+        await make_startable_now(booking_id)
         before = (await client.get("/station/actionable-count")).json()["count"]
         assert before >= 1  # свежая заявка в "accepted" уже требует решения
 

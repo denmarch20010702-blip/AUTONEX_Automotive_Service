@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { deleteService, updateService, type Service } from "../../api/client";
+import { formatDuration, splitMinutes, toTotalMinutes } from "../../utils/duration";
 import { iconForService, PencilIcon } from "../icons";
 
 // По заметке пользователя: рядом с крестиком удаления нужен карандаш для
@@ -18,16 +19,20 @@ export function EditableServiceTile({
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(service.name);
-  const [duration, setDuration] = useState(String(service.duration_minutes));
+  const initialSplit = splitMinutes(service.duration_minutes);
+  const [hours, setHours] = useState(initialSplit.hours);
+  const [minutes, setMinutes] = useState(initialSplit.minutes);
   const [price, setPrice] = useState(service.price);
   const [busy, setBusy] = useState(false);
+
+  const totalMinutes = toTotalMinutes(hours, minutes);
 
   const save = async () => {
     setBusy(true);
     try {
       const updated = await updateService(service.id, {
         name: name.trim(),
-        duration_minutes: Number(duration),
+        duration_minutes: totalMinutes,
         price: Number(price),
       });
       onSaved(updated);
@@ -65,8 +70,18 @@ export function EditableServiceTile({
           <input maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="form-field">
-          <label>Длительность, мин</label>
-          <input type="number" min={1} value={duration} onChange={(e) => setDuration(e.target.value)} />
+          <label>Длительность</label>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <input type="number" min={0} placeholder="часы" value={hours} onChange={(e) => setHours(e.target.value)} />
+            <input
+              type="number"
+              min={0}
+              max={59}
+              placeholder="минуты"
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value)}
+            />
+          </div>
         </div>
         <div className="form-field">
           <label>Цена, ₽</label>
@@ -76,7 +91,12 @@ export function EditableServiceTile({
           <button type="button" className="ghost-button" onClick={() => setEditing(false)}>
             Отмена
           </button>
-          <button type="button" className="primary-button" disabled={!name.trim() || busy} onClick={save}>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!name.trim() || totalMinutes <= 0 || busy}
+            onClick={save}
+          >
             Сохранить
           </button>
         </div>
@@ -127,7 +147,9 @@ export function EditableServiceTile({
       </button>
       <Icon />
       <span>{service.name}</span>
-      <span className="price">{service.price} ₽</span>
+      <span className="price">
+        {service.price} ₽ · {formatDuration(service.duration_minutes)}
+      </span>
     </div>
   );
 }

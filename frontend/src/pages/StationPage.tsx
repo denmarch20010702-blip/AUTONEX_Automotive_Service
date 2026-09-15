@@ -8,6 +8,7 @@ import {
   listArchive,
   listBookings,
   listServices,
+  listTireSetArchive,
   listTireSets,
   type ArchivedBooking,
   type Booking,
@@ -15,17 +16,21 @@ import {
   type ClientInfo,
   type Service,
   type TireSet,
+  type TireSetArchiveEntry,
 } from "../api/client";
 import { useBookingEvents } from "../api/events";
-import { Countdown } from "../components/Countdown";
+import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
 import { NotificationDot } from "../components/NotificationDot";
 import { StatusIndicator } from "../components/StatusIndicator";
+import { formatSlotLabel } from "../components/booking/SlotPicker";
 import { AddServiceForm } from "../components/station/AddServiceForm";
 import { AdditionalWorkPanel } from "../components/station/AdditionalWorkPanel";
 import { ArchiveTable } from "../components/station/ArchiveTable";
 import { BookingActions } from "../components/station/BookingActions";
 import { EditableServiceTile } from "../components/station/EditableServiceTile";
+import { PostsBoard } from "../components/station/PostsBoard";
+import { TireSetArchiveTable } from "../components/TireSetArchiveTable";
 
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
@@ -36,6 +41,8 @@ export function StationPage() {
   const [archive, setArchive] = useState<ArchivedBooking[]>([]);
   const [showArchive, setShowArchive] = useState(false);
   const [tireSets, setTireSets] = useState<TireSet[]>([]);
+  const [tireArchive, setTireArchive] = useState<TireSetArchiveEntry[]>([]);
+  const [showTireArchive, setShowTireArchive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
 
@@ -81,6 +88,12 @@ export function StationPage() {
       .catch((err) => setError(err.message));
   }, []);
 
+  const reloadTireArchive = useCallback(() => {
+    listTireSetArchive()
+      .then(setTireArchive)
+      .catch((err) => setError(err.message));
+  }, []);
+
   useEffect(() => {
     reloadBookings();
     reloadServices();
@@ -89,7 +102,17 @@ export function StationPage() {
     reloadArchive();
     reloadClients();
     reloadTireSets();
-  }, [reloadBookings, reloadServices, reloadCars, reloadRevenue, reloadArchive, reloadClients, reloadTireSets]);
+    reloadTireArchive();
+  }, [
+    reloadBookings,
+    reloadServices,
+    reloadCars,
+    reloadRevenue,
+    reloadArchive,
+    reloadClients,
+    reloadTireSets,
+    reloadTireArchive,
+  ]);
 
   // Пока перезапрашиваем список по каждому событию, а не редактируем его на
   // лету — просто и достаточно для каркаса; B7 (полноценный экран станции
@@ -123,16 +146,15 @@ export function StationPage() {
 
   // UI_description.md п.12: в таблице заявок должны быть видны отдельными
   // столбиками и контакты клиента, и изначально забронированная услуга.
-  const clientContact = (clientId: number): string => {
-    const c = clients.find((x) => x.id === clientId);
-    return c ? `${c.name} · ${c.email}` : `#${clientId}`;
-  };
+  const clientOf = (clientId: number): ClientInfo | undefined =>
+    clients.find((x) => x.id === clientId);
 
   const handleIssueTireSet = async (id: number) => {
     if (!window.confirm("Выдать этот комплект шин клиенту?")) return;
     try {
       await issueTireSet(id);
       reloadTireSets();
+      reloadTireArchive();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -141,6 +163,8 @@ export function StationPage() {
   return (
     <div>
       <h1 className="step-title">Экран станции</h1>
+
+      <PostsBoard bookings={bookings ?? []} />
 
       <div
         style={{
@@ -185,7 +209,17 @@ export function StationPage() {
         {bookings && bookings.length === 0 && <p className="panel-empty">Заявок пока нет.</p>}
         {bookings && bookings.length > 0 && (
           <div className="data-table-wrap">
-            <table className="data-table">
+            <table className="data-table data-table--fixed">
+              <colgroup>
+                <col style={{ width: "5%" }} />
+                <col style={{ width: "16%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "15%" }} />
+                <col style={{ width: "13%" }} />
+                <col style={{ width: "15%" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th>ID</th>
@@ -199,13 +233,24 @@ export function StationPage() {
                 </tr>
               </thead>
               <tbody>
-                {bookings.map((booking) => (
+                {bookings.map((booking) => {
+                  const client = clientOf(booking.client_id);
+                  return (
                   <tr key={booking.id}>
                     <td>{booking.id}</td>
-                    <td>{clientContact(booking.client_id)}</td>
+                    <td>
+                      {client ? (
+                        <>
+                          <div>{client.name}</div>
+                          <div style={{ fontSize: "0.8em", color: "var(--color-muted)" }}>{client.email}</div>
+                        </>
+                      ) : (
+                        `#${booking.client_id}`
+                      )}
+                    </td>
                     <td>{booking.services.map((s) => s.name).join(", ") || "—"}</td>
                     <td>{carLabel(booking.car_id)}</td>
-                    <td>{new Date(booking.start_at).toLocaleString()}</td>
+                    <td>{formatSlotLabel(booking.start_at)}</td>
                     <td>
                       <StatusIndicator status={booking.status} />
                       <NotificationDot
@@ -218,6 +263,9 @@ export function StationPage() {
                       />
                       {booking.status === "on_post" && booking.service_ends_at && (
                         <Countdown targetIso={booking.service_ends_at} />
+                      )}
+                      {booking.status === "accepted" && (
+                        <UpcomingCountdown targetIso={booking.start_at} />
                       )}
                     </td>
                     <td>
@@ -238,7 +286,8 @@ export function StationPage() {
                       />
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -278,6 +327,13 @@ export function StationPage() {
             </table>
           </div>
         )}
+        <div className="panel-header" style={{ marginTop: "1rem" }}>
+          <h3 style={{ margin: 0 }}>Журнал приёма и выдачи шин</h3>
+          <button type="button" className="ghost-button" onClick={() => setShowTireArchive((v) => !v)}>
+            {showTireArchive ? "Скрыть" : `Показать (${tireArchive.length})`}
+          </button>
+        </div>
+        {showTireArchive && <TireSetArchiveTable entries={tireArchive} />}
       </div>
 
       <div className="panel">

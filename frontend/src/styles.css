@@ -366,13 +366,25 @@ body {
   text-align: left;
   font-weight: 600;
   padding: 0.65rem 0.9rem;
-  white-space: nowrap;
 }
 
 .data-table td {
   padding: 0.65rem 0.9rem;
   border-top: 1px solid var(--color-border);
   vertical-align: top;
+  /* Длинные "неразрывные" значения (в первую очередь email) иначе
+     раздвигают столбец шире контейнера и требуют горизонтальный скролл
+     страницы — переносим внутри самой ячейки вместо этого. */
+  overflow-wrap: anywhere;
+}
+
+/* Таблицы с большим числом столбцов и небольшим пространством (например
+   "Все заявки" на станции) — фиксированная раскладка колонок (ширины
+   задаются через <colgroup>) гарантирует, что таблица никогда не станет
+   шире контейнера: длинный контент переносится внутри ячейки, а не
+   раздвигает её. */
+.data-table--fixed {
+  table-layout: fixed;
 }
 
 .data-table tbody tr:hover {
@@ -391,7 +403,19 @@ body {
   font-weight: 600;
   color: var(--color-text);
   cursor: pointer;
-  white-space: nowrap;
+  /* УБРАН nowrap (UI_description.md, п.36, 2026-09-14, найденный баг):
+     в узкой колонке "Действия" (13% при table-layout:fixed) длинный текст
+     "Принять на пост" не мог перенестись и визуально вылезал за пределы
+     своей ячейки, наезжая на соседнюю колонку "Доп. работы" — тот же
+     класс бага, что уже чинился для самой таблицы. */
+  white-space: normal;
+  /* `.data-table td` задаёт `overflow-wrap: anywhere` (нужно для email) —
+     это наследуемое свойство, без явного сброса оно "протекло" бы и на
+     кнопку внутри ячейки, позволяя переносу рвать слово посередине
+     ("Прин-" / "ять"). Прямая просьба пользователя (2026-09-14): перенос
+     кнопки на новую строку допустим, но только по границе целого слова. */
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .action-button:hover {
@@ -443,4 +467,55 @@ body {
   color: var(--color-text);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* Доска постов (2026-09-14, прямая просьба пользователя) — наверху экрана
+   станции, обозначает 3 реальных физических места для работы с машинами
+   (см. PostsBoard.tsx). Тёмно-серые прямоугольники, контур светится цветом
+   текущего состояния поста. */
+.posts-board {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.post-slot {
+  flex: 1;
+  min-width: 0;
+  height: 120px;
+  border-radius: 12px;
+  background: #2b2b2f;
+  border: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  color: #f2f2f2;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.post-slot--free {
+  border-color: #3ddc73;
+  box-shadow: 0 0 12px 2px rgba(61, 220, 115, 0.7);
+}
+
+.post-slot--reserved {
+  border-color: #f5a623;
+  box-shadow: 0 0 12px 2px rgba(245, 166, 35, 0.7);
+}
+
+.post-slot--busy {
+  border-color: #e5484d;
+  box-shadow: 0 0 12px 2px rgba(229, 72, 77, 0.7);
+}
+
+.post-slot__label {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.post-slot__hint {
+  font-size: 0.8rem;
+  color: #c9c9cf;
 }
