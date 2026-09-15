@@ -16,7 +16,7 @@
 - `VERIFICATION.md` — как самостоятельно проверить текущее состояние проекта.
 - `backend/` — FastAPI-приложение (`scripts/verify.sh`, `scripts/prove_concurrency.py`, `scripts/cleanup_test_data.py`).
 - `frontend/` — React/TypeScript-приложение (Vite).
-- `docker-compose.yml` — оркестрация `db` (PostgreSQL) + `backend` + `frontend`.
+- `docker-compose.yml` — оркестрация `db` (PostgreSQL) + `backend` + `frontend`, плюс изолированные `db_test`/`backend_test` (профиль `test`, см. "Тесты" ниже).
 
 Входные материалы задания (письмо от MadDevs, PDF со всеми 14 кейсами, анализ выбора) не публикуются в этом репозитории — они содержат оригинальные материалы тестового задания MadDevs.
 
@@ -36,6 +36,18 @@ docker compose up --build
 - PostgreSQL: `localhost:5432` (пользователь/пароль/база — `station`/`station`/`station`, см. `docker-compose.yml`)
 
 Проверено (2026-09-10): все три контейнера (`db`, `backend`, `frontend`) собираются и стартуют, `db` проходит healthcheck, `backend` отвечает на `/health`, `frontend` отдаёт страницу и достучивается до backend через CORS.
+
+## Тесты
+
+Backend-тесты гоняются в отдельном контейнере с отдельной БД (`db_test`/`backend_test`, профиль `test` в `docker-compose.yml`), чтобы pytest не мог зацепить данные живой станции, которую параллельно тестируют руками:
+
+```bash
+docker compose --profile test up -d db_test
+docker compose --profile test run --rm backend_test alembic upgrade head   # один раз для новой db_test
+docker compose --profile test run --rm backend_test pytest -q
+```
+
+Так было не всегда — до 2026-09-15 тесты запускались через `docker compose exec backend pytest`, то есть на той же БД, что и живой backend; это несколько раз приводило к утечке тестовых данных и один раз испортило накопленную выручку станции (детали и разбор — `logs/DECISIONS_LOG.md`).
 
 ## Статус (обновлено 2026-09-15)
 

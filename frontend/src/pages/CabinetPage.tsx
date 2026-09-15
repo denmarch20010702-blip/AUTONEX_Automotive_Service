@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import {
   deleteCar,
   deleteClient,
+  dismissTireSeasonReminder,
   getMaintenanceSuggestions,
   getTireSeasonReminder,
   issueTireSet,
@@ -24,7 +25,7 @@ import {
   type TireSet,
   type TireSetArchiveEntry,
 } from "../api/client";
-import { useBookingEvents } from "../api/events";
+import { useDebouncedEventTick } from "../api/events";
 import { AddCarForm } from "../components/booking/AddCarForm";
 import { CAR_MAKES, modelsForMake } from "../data/carCatalog";
 import { ClientAdditionalWorks } from "../components/booking/ClientAdditionalWorks";
@@ -378,7 +379,7 @@ export function CabinetPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const [addingCar, setAddingCar] = useState(false);
-  const events = useBookingEvents();
+  const reloadTick = useDebouncedEventTick();
 
   const reload = useCallback(() => {
     if (!client) return;
@@ -413,8 +414,23 @@ export function CabinetPage() {
   }, [reload]);
 
   useEffect(() => {
-    if (events.length > 0) reload();
-  }, [events, reload]);
+    if (reloadTick > 0) reload();
+  }, [reloadTick, reload]);
+
+  // UI_description.md п.44: закрыть баннер крестиком — сразу прячем (не
+  // дожидаясь ответа сервера) и не показываем больше до конца сезона; при
+  // ошибке возвращаем баннер обратно, чтобы не потерять напоминание молча.
+  const dismissTireReminder = async () => {
+    if (!client || !tireSeasonReminder) return;
+    const previous = tireSeasonReminder;
+    setTireSeasonReminder({ ...tireSeasonReminder, active: false });
+    try {
+      await dismissTireSeasonReminder(client.id);
+    } catch (err) {
+      setTireSeasonReminder(previous);
+      setError((err as Error).message);
+    }
+  };
 
   const cancelBooking = async (id: number) => {
     if (!window.confirm("Отменить эту запись?")) return;
@@ -491,6 +507,42 @@ export function CabinetPage() {
 
       {error && <div className="error-banner">{error}</div>}
 
+      {/* UI_description.md п.44 (2026-09-15): сезонный баннер про хранение
+          шин (B6) должен быть НАД остальными напоминаниями и закрываться
+          крестиком — до конца сезона больше не появляется (письмо в почте
+          при этом всё равно остаётся). */}
+      {tireSeasonReminder?.active && (
+        <div
+          className="panel"
+          style={{ background: "var(--color-primary)", textAlign: "center", position: "relative" }}
+        >
+          <button
+            type="button"
+            onClick={dismissTireReminder}
+            title="Закрыть до конца сезона"
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 10,
+              border: "none",
+              background: "none",
+              color: "inherit",
+              fontWeight: 700,
+              cursor: "pointer",
+              fontSize: "1.1rem",
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+          <p style={{ margin: "0.25rem 0" }}>
+            Сезонное напоминание ({tireSeasonReminder.season_label}): наша станция принимает шины на сезонное
+            хранение — можно освободить место в гараже или багажнике на весь сезон. Если вы ещё не пользовались
+            этой услугой — посмотрите раздел "Хранение шин" ниже.
+          </p>
+        </div>
+      )}
+
       {/* UI_description.md п.23: письмо-напоминание за день до записи (B3)
           пишется в email-заглушку, невидимую самому клиенту в интерфейсе —
           тот же факт нужно показать и здесь, а не только в outbox_emails. */}
@@ -531,19 +583,6 @@ export function CabinetPage() {
           <button type="button" className="primary-button" onClick={() => navigate("/")}>
             Записаться
           </button>
-        </div>
-      )}
-
-      {/* B6 (2026-09-15, найденный пользователем пробел): раньше это промо
-          уходило только в email-заглушку — теперь видно и здесь, тем же
-          принципом, что и баннер B5 выше. */}
-      {tireSeasonReminder?.active && (
-        <div className="panel" style={{ background: "var(--color-primary)", textAlign: "center" }}>
-          <p style={{ margin: "0.25rem 0" }}>
-            Сезонное напоминание ({tireSeasonReminder.season_label}): наша станция принимает шины на сезонное
-            хранение — можно освободить место в гараже или багажнике на весь сезон. Если вы ещё не пользовались
-            этой услугой — посмотрите раздел "Хранение шин" ниже.
-          </p>
         </div>
       )}
 
@@ -689,7 +728,7 @@ export function CabinetPage() {
                       </div>
                     </td>
                     <td>
-                      <ClientAdditionalWorks bookingId={b.id} refreshKey={events.length} />
+                      <ClientAdditionalWorks bookingId={b.id} refreshKey={reloadTick} />
                     </td>
                   </tr>
                 ))}

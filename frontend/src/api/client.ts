@@ -264,6 +264,12 @@ export function getTireSeasonReminder(
   return request(`/clients/${clientId}/tire-season-reminder`);
 }
 
+// UI_description.md п.44 (2026-09-15): закрыть баннер крестиком — не должен
+// вернуться до конца текущего сезона (само письмо в почте при этом остаётся).
+export function dismissTireSeasonReminder(clientId: number): Promise<void> {
+  return request(`/clients/${clientId}/tire-season-reminder/dismiss`, { method: "POST" });
+}
+
 export function listAllClients(): Promise<ClientInfo[]> {
   return request<ClientInfo[]>("/clients");
 }

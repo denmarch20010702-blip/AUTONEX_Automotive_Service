@@ -76,6 +76,12 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
                 AdditionalWork.booking_id == booking.id,
                 AdditionalWork.status == AdditionalWorkStatus.APPROVED,
                 AdditionalWork.execution_started.is_(False),
+                # Тот же баг, что и в app/api/bookings.py (найден пользователем
+                # 2026-09-15): работа, перенесённая на отдельный будущий визит
+                # (`scheduled_booking_id` заполнен), не должна продлевать
+                # занятость ЭТОГО поста сейчас — она будет реально выполнена
+                # на другой заявке, в другой день.
+                AdditionalWork.scheduled_booking_id.is_(None),
             )
         )
     ).scalars().all()

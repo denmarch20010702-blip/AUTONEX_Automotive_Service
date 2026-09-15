@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.models.booking import booking_services
 from app.schemas.booking import BookingCreate, BookingReschedule, BookingRead, BookingStatusUpdate, SlotOption
+from app.services.ai_diagnostics import run_ai_diagnostic
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
 from app.services.robot_timer import schedule_auto_advance
@@ -315,6 +316,13 @@ async def update_booking_status(
             detail=f"Нельзя перейти из статуса '{booking.status.value}' в '{data.status.value}'",
         )
 
+    # Снимаем ДО перезаписи ниже — нужно, чтобы отличить настоящий "заезд"
+    # машины (accepted -> on_post) от возврата на пост для отработки уже
+    # согласованной доп. работы (см. resolve_next_step в robot_timer.py,
+    # который трогает on_post иначе, не через этот эндпоинт) — ИИ-диагностика
+    # (C4) должна запускаться только один раз, при первом заезде.
+    previous_status = booking.status
+
     # Реальный найденный баг (2026-09-14): ничто не мешало принять машину на
     # пост (и запустить автотаймер обслуживания, п.7/C2) намного раньше
     # назначенного `start_at` — таймер отталкивается от момента нажатия
@@ -429,6 +437,10 @@ async def update_booking_status(
                     "price": str(w.price),
                     "proposed_by": w.proposed_by.value,
                     "status": w.status.value,
+                    # Явно видно в архиве, почему одобренная работа не вошла в
+                    # total_price этой заявки — перенесена на отдельный визит
+                    # (см. фильтр по scheduled_booking_id ниже).
+                    "scheduled_booking_id": w.scheduled_booking_id,
                 }
                 for w in additional_works
             ]
@@ -439,8 +451,23 @@ async def update_booking_status(
             # отвеченные (последних тут уже быть не может — см. guard выше) в
             # сумму не входят.
             if completing:
+                # Найденный пользователем реальный баг (2026-09-15): работа,
+                # одобренная, но перенесённая на ОТДЕЛЬНЫЙ будущий визит
+                # (п.37/38 — `scheduled_booking_id` заполнен, см.
+                # schedule_additional_work в additional_works.py), ещё не
+                # выполнена — деньги за неё не должны попадать в счётчик
+                # выручки СЕЙЧАС, при выдаче основной машины. Иначе клиент
+                # платит за услугу, которую фактически ещё не оказали, а
+                # когда отдельный визит реально пройдёт и будет выдан — эта
+                # же сумма начислится ЕЩЁ РАЗ (через total_price его
+                # собственной услуги), то есть без этого фильтра деньги
+                # задваивались бы.
                 total += sum(
-                    (w.price for w in additional_works if w.status == AdditionalWorkStatus.APPROVED),
+                    (
+                        w.price
+                        for w in additional_works
+                        if w.status == AdditionalWorkStatus.APPROVED and w.scheduled_booking_id is None
+                    ),
                     start=Decimal("0"),
                 )
                 await session.execute(
@@ -507,5 +534,18 @@ async def update_booking_status(
     # услуг. Пилотная часть C2 (без очереди/симуляции сбоев).
     if data.status == BookingStatus.ON_POST:
         schedule_auto_advance(booking.id, timedelta(minutes=on_post_duration_minutes))
+
+        # C4 (2026-09-15) — "AI Diagnostic Assistant" из buisness.md:
+        # запускается сразу после заезда машины, параллельно с началом
+        # основной услуги — но только при настоящем заезде (accepted ->
+        # on_post), не при возврате на пост ради уже согласованной доп.
+        # работы. Обёрнут в try/except намеренно: диагностика необязательна
+        # для приёма машины на пост — её сбой (БД, сеть до LLM) не должен
+        # превращать успешный приём в 500 клиенту станции.
+        if previous_status == BookingStatus.ACCEPTED:
+            try:
+                await run_ai_diagnostic(session, booking.id)
+            except Exception:
+                pass
 
     return BookingRead(**snapshot)

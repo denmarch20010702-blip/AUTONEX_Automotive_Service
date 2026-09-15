@@ -78,11 +78,26 @@ async def insert_booking(
 
 
 async def cleanup(client: AsyncClient, *, booking_ids: list[int], car_id: int, client_id: int, service_id: int) -> None:
+    from app.models import BookingArchive
+    from sqlalchemy import delete as sa_delete
+
     async with async_session() as session:
         for booking_id in booking_ids:
             booking = await session.get(Booking, booking_id)
             if booking is not None:
                 await session.delete(booking)
+        # Найденный на практике баг (2026-09-15): cancel_bookings_that_would_
+        # delay_the_queue() отменяет заявку через update_booking_status(),
+        # который теперь архивирует CANCELLED в BookingArchive (не только
+        # удаляет из активной таблицы) — без явной очистки здесь эти строки
+        # копились в общей dev-БД при каждом прогоне тестов (пользователь
+        # заметил разросшийся архив станции с записями "Overdue Tester").
+        if booking_ids:
+            await session.execute(
+                sa_delete(BookingArchive).where(
+                    BookingArchive.original_booking_id.in_(booking_ids)
+                )
+            )
         await session.commit()
     await client.delete(f"/cars/{car_id}")
     await client.delete(f"/clients/{client_id}")

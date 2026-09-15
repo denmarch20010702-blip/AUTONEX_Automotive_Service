@@ -121,3 +121,31 @@ async def test_tire_season_reminder_endpoint_reflects_outbox_state(client: Async
     finally:
         await delete_outbox(email)
         await client.delete(f"/clients/{client_id}")
+
+
+@pytest.mark.asyncio
+async def test_dismissing_tire_season_reminder_hides_it_until_next_season(client: AsyncClient) -> None:
+    # UI_description.md п.44 (2026-09-15): баннер закрывается крестиком и не
+    # должен вернуться до конца ТЕКУЩЕГО сезона — письмо в почте при этом
+    # никуда не пропадает, закрытие касается только баннера в кабинете.
+    email = unique_email()
+    client_resp = await client.post("/clients", json={"email": email, "name": "Закрываю баннер"})
+    client_id = client_resp.json()["id"]
+    try:
+        async with async_session() as session:
+            await send_seasonal_tire_reminders(session)
+
+        before = (await client.get(f"/clients/{client_id}/tire-season-reminder")).json()
+        assert before["active"] is True
+
+        resp = await client.post(f"/clients/{client_id}/tire-season-reminder/dismiss")
+        assert resp.status_code == 204
+
+        after = (await client.get(f"/clients/{client_id}/tire-season-reminder")).json()
+        assert after["active"] is False
+
+        # Письмо осталось на месте — закрытие баннера его не трогает.
+        assert len(await outbox_subjects_for(email)) == 1
+    finally:
+        await delete_outbox(email)
+        await client.delete(f"/clients/{client_id}")

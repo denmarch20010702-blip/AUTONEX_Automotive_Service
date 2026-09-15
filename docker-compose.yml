@@ -15,6 +15,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # Найденный на практике баг (2026-09-15, пользователь): автотесты гоняли
+  # против той же БД, что и живой backend, который пользователь тестирует
+  # руками одновременно — заявки/клиенты/выручка от прогонов тестов копились
+  # в реальных данных (несколько заходов на эту утечку за сессию). Отдельная
+  # БД в отдельном контейнере — не профиль/схема внутри той же `db` — чтобы
+  # тесты физически не могли задеть данные живого backend'а, даже по ошибке.
+  db_test:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: station
+      POSTGRES_PASSWORD: station
+      POSTGRES_DB: station_test
+    volumes:
+      - db_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U station"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     env_file:
@@ -25,6 +46,22 @@ services:
       - "8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  # Изолированный прогон тестов: тот же образ backend'а, но своя БД
+  # (`db_test`), чтобы pytest не мог случайно тронуть данные живой станции.
+  # Запуск: `docker compose --profile test run --rm backend_test pytest`.
+  backend_test:
+    build: ./backend
+    profiles: ["test"]
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://station:station@db_test:5432/station_test
+    depends_on:
+      db_test:
         condition: service_healthy
     volumes:
       - ./backend:/app
@@ -43,3 +80,4 @@ services:
 
 volumes:
   db_data:
+  db_test_data:

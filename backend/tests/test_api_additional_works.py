@@ -594,6 +594,169 @@ async def test_approve_while_still_on_post_with_queued_next_booking_offers_separ
             await client.delete(f"/clients/{other_client_id}")
 
 
+async def refund_revenue(booking_id: int, amount) -> None:
+    # Тот же честный приём, что уже применён в test_api_bookings.py
+    # (2026-09-15): вычитаем только если в архиве реально есть ISSUED-запись
+    # именно этой заявки — иначе счётчик станции на общей dev-БД уходит в
+    # минус, если тест упал раньше настоящего начисления.
+    from sqlalchemy import select, update
+
+    from app.db.session import async_session
+    from app.models import STATION_STATS_ROW_ID, BookingArchive, BookingStatus, StationStats
+
+    async with async_session() as session:
+        archived = (
+            await session.execute(
+                select(BookingArchive.id).where(
+                    BookingArchive.original_booking_id == booking_id,
+                    BookingArchive.status == BookingStatus.ISSUED,
+                )
+            )
+        ).first()
+        if archived is None:
+            return
+        await session.execute(
+            update(StationStats)
+            .where(StationStats.id == STATION_STATS_ROW_ID)
+            .values(total_revenue=StationStats.total_revenue - amount)
+        )
+        await session.commit()
+
+
+async def delete_archive_entry(booking_id: int) -> None:
+    from sqlalchemy import delete as sa_delete
+
+    from app.db.session import async_session
+    from app.models import BookingArchive
+
+    async with async_session() as session:
+        await session.execute(
+            sa_delete(BookingArchive).where(BookingArchive.original_booking_id == booking_id)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_deferred_additional_work_not_charged_until_its_own_visit_is_issued(
+    client: AsyncClient,
+) -> None:
+    # Найденный пользователем реальный баг (2026-09-15): доп. работа,
+    # одобренная, но перенесённая на отдельный визит (п.37, см. тест выше —
+    # "needs_separate_visit"), ещё НЕ выполнена. Если машина по основной
+    # заявке уезжает (issued) раньше, чем прошёл этот отдельный визит, её
+    # цена не должна попадать в выручку/архив сейчас — а должна начислиться
+    # ровно один раз, когда реально пройдёт (и будет выдана) сама отдельная
+    # заявка на эту работу. Без фикса цена доп. работы начислялась ДВАЖДЫ:
+    # сразу при выдаче основной машины и повторно при выдаче отдельного визита.
+    from decimal import Decimal
+
+    from app.db.session import async_session
+    from app.models import Booking, BookingStatus
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 360)
+    extra_id = await make_extra_service(client, price="300.00", duration_minutes=45)
+    other_client_id = other_car_id = blocking_id = scheduled_id = None
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        booking_now = resp.json()
+        post_id = booking_now["post_id"]
+        end_at = datetime.fromisoformat(booking_now["end_at"].replace("Z", "+00:00"))
+
+        other_client_resp = await client.post(
+            "/clients", json={"email": unique_email(), "name": "AW Blocker"}
+        )
+        other_client_id = other_client_resp.json()["id"]
+        other_car_resp = await client.post(
+            "/cars", json={"client_id": other_client_id, "make": "Kia", "model": "Rio"}
+        )
+        other_car_id = other_car_resp.json()["id"]
+
+        async with async_session() as session:
+            blocking = Booking(
+                client_id=other_client_id,
+                car_id=other_car_id,
+                post_id=post_id,
+                start_at=end_at,
+                end_at=end_at + timedelta(minutes=30),
+                status=BookingStatus.ACCEPTED,
+            )
+            session.add(blocking)
+            await session.commit()
+            await session.refresh(blocking)
+            blocking_id = blocking.id
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "ready"})
+        assert resp.status_code == 200
+
+        work = (await propose(client, booking_id, extra_id)).json()
+        resp = await client.post(f"/additional-works/{work['id']}/respond", json={"status": "approved"})
+        assert resp.status_code == 409  # нет места сейчас — только отдельный визит
+
+        day = date.today() + timedelta(days=361)
+        window_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
+        slot = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [extra_id], "date": window_start},
+            )
+        ).json()[0]
+        resp = await client.post(
+            f"/additional-works/{work['id']}/schedule", json={"start_at": slot["start_at"]}
+        )
+        assert resp.status_code == 200
+        scheduled_id = resp.json()["scheduled_booking_id"]
+
+        # Основная заявка уезжает БЕЗ выполненной доп. работы — только
+        # стоимость основной услуги (500.00 из make_booking) должна начислиться.
+        stats_before = (await client.get("/station/stats")).json()
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "issued"})
+        assert resp.status_code == 200
+        stats_after_main = (await client.get("/station/stats")).json()
+        delta_main = Decimal(stats_after_main["total_revenue"]) - Decimal(stats_before["total_revenue"])
+        assert delta_main == Decimal("500.00")  # НЕ 800.00 — доп. работа ещё не выполнена
+
+        archive = (await client.get("/station/archive", params={"client_id": client_id})).json()["items"]
+        main_entry = next(a for a in archive if a["original_booking_id"] == booking_id)
+        assert Decimal(main_entry["total_price"]) == Decimal("500.00")
+        aw_snapshot = next(w for w in main_entry["additional_works_snapshot"] if w["id"] == work["id"])
+        assert aw_snapshot["status"] == "approved"
+        assert aw_snapshot["scheduled_booking_id"] == scheduled_id
+
+        # Теперь реально проходит и выдаётся отдельный визит — вот тут деньги
+        # за доп. работу должны начислиться, и ровно один раз (не задвоить).
+        await make_startable_now(scheduled_id)
+        for status in ("on_post", "ready", "issued"):
+            resp = await client.post(f"/bookings/{scheduled_id}/status", json={"status": status})
+            assert resp.status_code == 200
+        stats_after_extra = (await client.get("/station/stats")).json()
+        delta_extra = Decimal(stats_after_extra["total_revenue"]) - Decimal(stats_after_main["total_revenue"])
+        assert delta_extra == Decimal("300.00")
+
+        total_delta = Decimal(stats_after_extra["total_revenue"]) - Decimal(stats_before["total_revenue"])
+        assert total_delta == Decimal("800.00")  # 500 + 300, ровно один раз каждая
+    finally:
+        await cleanup(
+            client,
+            booking_id=booking_id,
+            car_id=car_id,
+            client_id=client_id,
+            service_id=service_id,
+            extra_service_ids=[extra_id],
+            extra_booking_ids=[b for b in (blocking_id,) if b],
+        )
+        if other_car_id:
+            await client.delete(f"/cars/{other_car_id}")
+        if other_client_id:
+            await client.delete(f"/clients/{other_client_id}")
+        await refund_revenue(booking_id, Decimal("500.00"))
+        await delete_archive_entry(booking_id)
+        if scheduled_id:
+            await refund_revenue(scheduled_id, Decimal("300.00"))
+            await delete_archive_entry(scheduled_id)
+
+
 @pytest.mark.asyncio
 async def test_pending_count_drops_after_response(client: AsyncClient) -> None:
     # UI_description.md п.17: красная точка у "Личный кабинет" держится на

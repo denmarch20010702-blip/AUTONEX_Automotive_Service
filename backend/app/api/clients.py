@@ -107,7 +107,21 @@ async def tire_season_reminder(client_id: int, session: AsyncSession = Depends(g
             select(OutboxEmail.id).where(OutboxEmail.to == client.email, OutboxEmail.subject == subject)
         )
     ).first()
-    return {"active": already_sent is not None, "season_label": season_label}
+    # UI_description.md п.44 (2026-09-15): баннер закрывается крестиком и не
+    # должен вернуться до конца ЭТОГО сезона — письмо при этом всё равно
+    # уже пришло и остаётся в почте, закрытие касается только баннера.
+    dismissed = client.tire_season_reminder_dismissed_season == season_label
+    return {"active": already_sent is not None and not dismissed, "season_label": season_label}
+
+
+@router.post("/{client_id}/tire-season-reminder/dismiss", status_code=204, response_model=None)
+async def dismiss_tire_season_reminder(client_id: int, session: AsyncSession = Depends(get_session)) -> None:
+    client = await session.get(Client, client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    today = datetime.now(timezone.utc).date()
+    client.tire_season_reminder_dismissed_season = current_tire_season_label(today)
+    await session.commit()
 
 
 @router.delete("/{client_id}", status_code=204, response_model=None)

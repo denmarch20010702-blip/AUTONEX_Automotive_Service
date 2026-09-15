@@ -70,15 +70,34 @@ async def delete_booking(booking_id: int) -> None:
             await session.commit()
 
 
-async def refund_revenue(amount) -> None:
+async def refund_revenue(booking_id: int, amount) -> None:
     # Тесты, доводящие заявку до "issued", необратимо прибавляют деньги в
     # общий (не изолированный per-test) счётчик станции — иначе прогон
     # автотестов постепенно "накручивал" бы реальную выручку на dev-БД.
     # Возвращаем добавленное обратно в finally каждого такого теста.
-    from app.models import STATION_STATS_ROW_ID, StationStats
-    from sqlalchemy import update
+    #
+    # Найденный на практике реальный баг (2026-09-15, пользователь заметил
+    # "Заработано станцией" в минусе): это раньше вычитало amount
+    # БЕЗУСЛОВНО, даже если тест упал ДО перехода в issued (например, из-за
+    # честного 409 при гонке за пост на общей dev-БД) — тогда начисления не
+    # было, а вычитание всё равно происходило, и счётчик медленно уходил в
+    # минус при каждом упавшем прогоне. Теперь вычитаем только если в архиве
+    # реально есть ISSUED-запись именно этой заявки — то есть начисление
+    # точно произошло.
+    from app.models import STATION_STATS_ROW_ID, BookingArchive, BookingStatus, StationStats
+    from sqlalchemy import select, update
 
     async with async_session() as session:
+        archived = (
+            await session.execute(
+                select(BookingArchive.id).where(
+                    BookingArchive.original_booking_id == booking_id,
+                    BookingArchive.status == BookingStatus.ISSUED,
+                )
+            )
+        ).first()
+        if archived is None:
+            return
         await session.execute(
             update(StationStats)
             .where(StationStats.id == STATION_STATS_ROW_ID)
@@ -746,7 +765,7 @@ async def test_status_happy_path_through_awaiting_approval(client: AsyncClient) 
         # п.14).
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
         await client.delete(f"/catalog/{extra_id}")
-        await refund_revenue(Decimal("1400.00"))
+        await refund_revenue(booking_id, Decimal("1400.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -762,7 +781,7 @@ async def test_status_happy_path_skipping_approval(client: AsyncClient) -> None:
             assert resp.json()["status"] == target
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
-        await refund_revenue(Decimal("500.00"))
+        await refund_revenue(booking_id, Decimal("500.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -881,7 +900,7 @@ async def test_cancel_not_allowed_from_issued(client: AsyncClient) -> None:
         # удалением). Переход в issued также прибавил 500.00 в общий
         # счётчик станции и создал запись в журнале — возвращаем/убираем.
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
-        await refund_revenue(Decimal("500.00"))
+        await refund_revenue(booking_id, Decimal("500.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -920,7 +939,7 @@ async def test_issued_archives_booking_and_credits_revenue(client: AsyncClient) 
         assert delta == Decimal("500.00")  # цена услуги из make_service()
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
-        await refund_revenue(Decimal("500.00"))
+        await refund_revenue(booking_id, Decimal("500.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -943,7 +962,7 @@ async def test_issued_updates_car_last_service_date(client: AsyncClient) -> None
         assert car_after["last_service_date"] == date.today().isoformat()
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
-        await refund_revenue(Decimal("500.00"))
+        await refund_revenue(booking_id, Decimal("500.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -1028,7 +1047,7 @@ async def test_approved_additional_work_credited_only_on_issue(client: AsyncClie
         await cleanup(client, car_id=car_id, client_id=client_id, service_id=service_id)
         await client.delete(f"/catalog/{extra_approved}")
         await client.delete(f"/catalog/{extra_declined}")
-        await refund_revenue(Decimal("1100.00"))
+        await refund_revenue(booking_id, Decimal("1100.00"))
         await delete_archive_entry(booking_id)
 
 
@@ -1207,7 +1226,7 @@ async def test_concurrent_double_issue_credits_revenue_exactly_once(client: Asyn
         assert delta == Decimal("500.00")  # не задвоилось до 1000.00
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
-        await refund_revenue(Decimal("500.00"))
+        await refund_revenue(booking_id, Decimal("500.00"))
         await delete_archive_entry(booking_id)
 
 

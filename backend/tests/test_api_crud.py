@@ -8,6 +8,26 @@ def unique_email() -> str:
     return f"{uuid4().hex}@example.com"
 
 
+async def delete_archive_entries(*original_booking_ids: int) -> None:
+    # Найденный на практике баг (2026-09-15): отмена заявки (в т.ч. через
+    # каскадное удаление клиента) теперь архивирует её (BookingArchive),
+    # как и раньше делало только issued — тесты этого файла не подчищали
+    # созданные так записи журнала, и они копились в общей dev-БД при каждом
+    # прогоне (пользователь заметил разросшийся архив станции).
+    from sqlalchemy import delete as sa_delete
+
+    from app.db.session import async_session
+    from app.models import BookingArchive
+
+    async with async_session() as session:
+        await session.execute(
+            sa_delete(BookingArchive).where(
+                BookingArchive.original_booking_id.in_(original_booking_ids)
+            )
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_client_crud(client: AsyncClient) -> None:
     email = unique_email()
@@ -173,6 +193,7 @@ async def test_cannot_delete_car_or_client_with_active_booking(client: AsyncClie
     assert resp.status_code == 204
 
     await client.delete(f"/catalog/{service_id}")
+    await delete_archive_entries(booking_id)
 
 
 @pytest.mark.asyncio
@@ -195,6 +216,7 @@ async def test_station_archive_is_paginated(client: AsyncClient) -> None:
     service_id = service_resp.json()["id"]
 
     # 3 отдельные заявки на разные дни -> 3 записи в архиве после отмены.
+    booking_ids = []
     for day_offset in (76, 77, 78):
         day = date.today() + timedelta(days=day_offset)
         slot = (
@@ -217,6 +239,7 @@ async def test_station_archive_is_paginated(client: AsyncClient) -> None:
         )
         booking_id = booking_resp.json()["id"]
         await client.post(f"/bookings/{booking_id}/status", json={"status": "cancelled"})
+        booking_ids.append(booking_id)
 
     page1 = (
         await client.get(
@@ -239,6 +262,7 @@ async def test_station_archive_is_paginated(client: AsyncClient) -> None:
 
     await client.delete(f"/clients/{client_id}")
     await client.delete(f"/catalog/{service_id}")
+    await delete_archive_entries(*booking_ids)
 
 
 @pytest.mark.asyncio
@@ -311,6 +335,7 @@ async def test_delete_client_tolerates_booking_disappearing_mid_cascade(client: 
     assert (await client.get(f"/cars/{car_id}")).status_code == 404
 
     await client.delete(f"/catalog/{service_id}")
+    await delete_archive_entries(booking_id)
 
 
 @pytest.mark.asyncio
@@ -371,6 +396,7 @@ async def test_delete_client_cascades_bookings_and_cars(client: AsyncClient) -> 
     assert entry["status"] == "cancelled"
 
     await client.delete(f"/catalog/{service_id}")
+    await delete_archive_entries(booking_id)
 
 
 @pytest.mark.asyncio

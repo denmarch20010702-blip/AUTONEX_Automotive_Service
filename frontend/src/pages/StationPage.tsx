@@ -18,7 +18,7 @@ import {
   type TireSet,
   type TireSetArchiveEntry,
 } from "../api/client";
-import { useBookingEvents } from "../api/events";
+import { useBookingEvents, useDebouncedEventTick } from "../api/events";
 import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
 import { NotificationDot } from "../components/NotificationDot";
@@ -50,6 +50,7 @@ export function StationPage() {
   const [showTireArchive, setShowTireArchive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
+  const reloadTick = useDebouncedEventTick();
 
   const reloadBookings = useCallback(() => {
     listBookings()
@@ -130,7 +131,7 @@ export function StationPage() {
   // по постам) сделает это аккуратнее. Выручка и журнал тоже пересчитываются
   // по событию — они меняются именно в момент "выдачи"/"отмены" заявки.
   useEffect(() => {
-    if (events.length > 0) {
+    if (reloadTick > 0) {
       reloadBookings();
       reloadCars();
       reloadRevenue();
@@ -143,7 +144,7 @@ export function StationPage() {
       reloadServices();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, reloadBookings, reloadCars, reloadRevenue, reloadArchive, reloadServices]);
+  }, [reloadTick, reloadBookings, reloadCars, reloadRevenue, reloadArchive, reloadServices]);
 
   const carLabel = (carId: number): string => {
     const car = cars.find((c) => c.id === carId);
@@ -293,7 +294,7 @@ export function StationPage() {
                       <AdditionalWorkPanel
                         bookingId={booking.id}
                         services={services ?? []}
-                        refreshKey={events.length}
+                        refreshKey={reloadTick}
                       />
                     </td>
                   </tr>
