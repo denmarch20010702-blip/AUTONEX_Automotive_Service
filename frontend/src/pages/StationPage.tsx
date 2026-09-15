@@ -15,6 +15,7 @@ import {
   type CarInfo,
   type ClientInfo,
   type Service,
+  type StationStats,
   type TireSet,
   type TireSetArchiveEntry,
 } from "../api/client";
@@ -22,6 +23,7 @@ import { useBookingEvents, useDebouncedEventTick } from "../api/events";
 import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
 import { NotificationDot } from "../components/NotificationDot";
+import { OdometerNumber } from "../components/OdometerNumber";
 import { Pagination } from "../components/Pagination";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { formatSlotLabel } from "../components/booking/SlotPicker";
@@ -33,12 +35,19 @@ import { EditableServiceTile } from "../components/station/EditableServiceTile";
 import { PostsBoard } from "../components/station/PostsBoard";
 import { TireSetArchiveTable } from "../components/TireSetArchiveTable";
 
+// UI_description.md п.45 (2026-09-15) — только сами цифры катятся в
+// OdometerNumber, разряды разделяем пробелом (ru-RU), без копеек — для
+// компактного счётчика в углу это достаточная точность.
+function formatMoney(value: string | number): string {
+  return `${Math.round(Number(value)).toLocaleString("ru-RU")} ₽`;
+}
+
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [services, setServices] = useState<Service[] | null>(null);
   const [cars, setCars] = useState<CarInfo[]>([]);
   const [clients, setClients] = useState<ClientInfo[]>([]);
-  const [revenue, setRevenue] = useState<string | null>(null);
+  const [stats, setStats] = useState<StationStats | null>(null);
   const [archive, setArchive] = useState<ArchivedBooking[]>([]);
   const [archiveTotal, setArchiveTotal] = useState(0);
   const [archivePage, setArchivePage] = useState(1);
@@ -70,9 +79,9 @@ export function StationPage() {
       .catch((err) => setError(err.message));
   }, []);
 
-  const reloadRevenue = useCallback(() => {
+  const reloadStats = useCallback(() => {
     getStationStats()
-      .then((stats) => setRevenue(stats.total_revenue))
+      .then(setStats)
       .catch((err) => setError(err.message));
   }, []);
 
@@ -110,7 +119,7 @@ export function StationPage() {
     reloadBookings();
     reloadServices();
     reloadCars();
-    reloadRevenue();
+    reloadStats();
     reloadArchive();
     reloadClients();
     reloadTireSets();
@@ -119,7 +128,7 @@ export function StationPage() {
     reloadBookings,
     reloadServices,
     reloadCars,
-    reloadRevenue,
+    reloadStats,
     reloadArchive,
     reloadClients,
     reloadTireSets,
@@ -134,7 +143,7 @@ export function StationPage() {
     if (reloadTick > 0) {
       reloadBookings();
       reloadCars();
-      reloadRevenue();
+      reloadStats();
       reloadArchive();
       // Каталог услуг раньше не входил в цикл живого обновления — если
       // услугу удаляли в одной вкладке, в другой она "призраком" оставалась
@@ -144,7 +153,7 @@ export function StationPage() {
       reloadServices();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadTick, reloadBookings, reloadCars, reloadRevenue, reloadArchive, reloadServices]);
+  }, [reloadTick, reloadBookings, reloadCars, reloadStats, reloadArchive, reloadServices]);
 
   const carLabel = (carId: number): string => {
     const car = cars.find((c) => c.id === carId);
@@ -176,8 +185,9 @@ export function StationPage() {
     <div>
       <h1 className="step-title">Экран станции</h1>
 
-      <PostsBoard bookings={bookings ?? []} clients={clients} cars={cars} />
-
+      {/* UI_description.md п.45 (2026-09-15): "Заработано станцией" — в
+          самый верх страницы, без визуальных изменений (тот же вид, что и
+          раньше, просто выше — было под доской постов). */}
       <div
         style={{
           textAlign: "center",
@@ -188,31 +198,56 @@ export function StationPage() {
         }}
       >
         <div style={{ color: "var(--color-muted)", fontSize: "0.85rem" }}>Заработано станцией</div>
-        <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>{revenue ?? "…"} ₽</div>
+        <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>
+          {stats ? formatMoney(stats.total_revenue) : "…"}
+        </div>
       </div>
+
+      {/* UI_description.md п.45 — компактная панель метрик под "Заработано
+          станцией", прижата к правому краю (тот же край, что у панелей
+          ниже). Заменяет прежние 4 счётчика очереди заявок (B7) — очередь
+          задач уже видна отдельно, в панели доп. работ у каждой заявки. */}
+      {stats && (
+        <div className="station-top-metrics">
+          <div className="station-top-metrics__card station-top-metrics__card--revenue">
+            <div className="station-top-metrics__row">
+              <span className="station-top-metrics__label">За всё время</span>
+              <OdometerNumber value={formatMoney(stats.total_revenue)} />
+            </div>
+            <div className="station-top-metrics__row">
+              <span className="station-top-metrics__label">За сегодня</span>
+              <OdometerNumber value={formatMoney(stats.today_revenue)} />
+            </div>
+          </div>
+          <div className="station-top-metrics__card">
+            <span className="station-top-metrics__value">
+              {stats.average_check !== null ? formatMoney(stats.average_check) : "—"}
+            </span>
+            <span className="station-top-metrics__label">Средний чек</span>
+          </div>
+          <div className="station-top-metrics__card">
+            <span className="station-top-metrics__value">
+              {stats.completion_rate_percent !== null ? `${stats.completion_rate_percent}%` : "—"}
+            </span>
+            <span className="station-top-metrics__label">Выполнено vs отменено</span>
+          </div>
+          <div className="station-top-metrics__card">
+            <span className="station-top-metrics__value">
+              {stats.additional_work_conversion_percent !== null
+                ? `${stats.additional_work_conversion_percent}%`
+                : "—"}
+            </span>
+            <span className="station-top-metrics__label">Конверсия доп. работ</span>
+          </div>
+        </div>
+      )}
+
+      <PostsBoard bookings={bookings ?? []} clients={clients} cars={cars} />
 
       {error && <div className="error-banner">{error}</div>}
 
-      <div className="panel">
-        <div className="panel-header">
-          <h2>Каталог услуг</h2>
-        </div>
-        <div className="tile-grid" style={{ marginBottom: "1rem" }}>
-          {services?.map((service) => (
-            <EditableServiceTile
-              key={service.id}
-              service={service}
-              onSaved={(updated) =>
-                setServices((prev) => (prev ?? []).map((s) => (s.id === updated.id ? updated : s)))
-              }
-              onDeleted={(id) => setServices((prev) => (prev ?? []).filter((s) => s.id !== id))}
-              onError={setError}
-            />
-          ))}
-        </div>
-        <AddServiceForm onCreated={(service) => setServices((prev) => [...(prev ?? []), service])} />
-      </div>
-
+      {/* UI_description.md п.45 (2026-09-15): "окно заявок поменять местами
+          с каталогом услуг" — "Все заявки" теперь выше "Каталога услуг". */}
       <div className="panel">
         <div className="panel-header">
           <h2>Все заявки</h2>
@@ -274,7 +309,10 @@ export function StationPage() {
                         }
                       />
                       {booking.status === "on_post" && booking.service_ends_at && (
-                        <Countdown targetIso={booking.service_ends_at} />
+                        <Countdown
+                          targetIso={booking.service_ends_at}
+                          startedIso={booking.on_post_started_at}
+                        />
                       )}
                       {booking.status === "accepted" && (
                         <UpcomingCountdown targetIso={booking.start_at} />
@@ -285,7 +323,7 @@ export function StationPage() {
                         booking={booking}
                         onChanged={() => {
                           reloadBookings();
-                          reloadRevenue();
+                          reloadStats();
                         }}
                         onError={setError}
                       />
@@ -308,7 +346,48 @@ export function StationPage() {
 
       <div className="panel">
         <div className="panel-header">
-          <h2>Шины на хранении</h2>
+          <h2>Каталог услуг</h2>
+        </div>
+        <div className="tile-grid" style={{ marginBottom: "1rem" }}>
+          {services?.map((service) => (
+            <EditableServiceTile
+              key={service.id}
+              service={service}
+              onSaved={(updated) =>
+                setServices((prev) => (prev ?? []).map((s) => (s.id === updated.id ? updated : s)))
+              }
+              onDeleted={(id) => setServices((prev) => (prev ?? []).filter((s) => s.id !== id))}
+              onError={setError}
+            />
+          ))}
+        </div>
+        <AddServiceForm onCreated={(service) => setServices((prev) => [...(prev ?? []), service])} />
+      </div>
+
+      {/* UI_description.md п.45: "журнал и журнал приёма и выдачи шин
+          поменять местами" — журнал станции теперь выше блока хранения шин
+          (у которого свой вложенный журнал приёма/выдачи ниже). */}
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Журнал</h2>
+          <button type="button" className="ghost-button" onClick={() => setShowArchive((v) => !v)}>
+            {showArchive ? "Скрыть" : `Показать (${archiveTotal})`}
+          </button>
+        </div>
+        {showArchive && (
+          <>
+            <Pagination page={archivePage} total={archiveTotal} pageSize={50} onChange={setArchivePage} />
+            <ArchiveTable entries={archive} />
+            <Pagination page={archivePage} total={archiveTotal} pageSize={50} onChange={setArchivePage} />
+          </>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
+          {/* UI_description.md п.45: счётчик комплектов, которые прямо
+              сейчас на хранении, рядом с названием таблицы. */}
+          <h2>Шины на хранении ({tireSets.length})</h2>
         </div>
         {tireSets.length === 0 && <p className="panel-empty">Сейчас никто не хранит шины.</p>}
         {tireSets.length > 0 && (
@@ -350,22 +429,6 @@ export function StationPage() {
             <Pagination page={tireArchivePage} total={tireArchiveTotal} pageSize={50} onChange={setTireArchivePage} />
             <TireSetArchiveTable entries={tireArchive} />
             <Pagination page={tireArchivePage} total={tireArchiveTotal} pageSize={50} onChange={setTireArchivePage} />
-          </>
-        )}
-      </div>
-
-      <div className="panel">
-        <div className="panel-header">
-          <h2>Журнал</h2>
-          <button type="button" className="ghost-button" onClick={() => setShowArchive((v) => !v)}>
-            {showArchive ? "Скрыть" : `Показать (${archiveTotal})`}
-          </button>
-        </div>
-        {showArchive && (
-          <>
-            <Pagination page={archivePage} total={archiveTotal} pageSize={50} onChange={setArchivePage} />
-            <ArchiveTable entries={archive} />
-            <Pagination page={archivePage} total={archiveTotal} pageSize={50} onChange={setArchivePage} />
           </>
         )}
       </div>

@@ -455,18 +455,137 @@ body {
 }
 
 /* Обратный отсчёт до конца обслуживания (UI_description.md, п.11) — виден
-   и станции, и клиенту рядом с индикатором статуса. */
+   и станции, и клиенту рядом с индикатором статуса.
+   UI_description.md п.45 (2026-09-15): раньше иконка+время+шкала прогресса
+   были в один ряд и в узких колонках таблицы секунды съезжали на вторую
+   строку — теперь шкала переехала под таймер отдельной строкой, сам
+   таймер (иконка+время) всегда остаётся в одну строку (white-space: nowrap). */
 .countdown-badge {
   display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
   margin-left: 0.5rem;
   padding: 0.15rem 0.55rem;
-  border-radius: 999px;
+  border-radius: 12px;
   background: var(--color-border);
   color: var(--color-text);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
+}
+
+.countdown-badge__row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+/* C3 (2026-09-15) — процент выполнения текущего раунда работы на посту,
+   под самим обратным отсчётом (см. Countdown.tsx). */
+.countdown-progress {
+  display: block;
+  width: 100%;
+  min-width: 36px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+.countdown-progress__bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary-active);
+  transition: width 1s linear;
+}
+
+/* UI_description.md п.45 (2026-09-15) — компактная панель метрик станции,
+   в верхнем правом углу под "Заработано станцией": правый край панели
+   выровнен с правым краем остальных окон (justify-content: flex-end),
+   карточки вдвое уже и на треть ниже прежних счётчиков очереди, которые
+   эта панель заменяет. Стиль — как у остального интерфейса (panel-border +
+   скруглённые углы), не голые числа на пустом фоне. */
+.station-top-metrics {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1.5rem;
+}
+
+.station-top-metrics__card {
+  min-width: 92px;
+  text-align: center;
+  background: var(--color-border);
+  border: 1px solid var(--color-primary-hover);
+  border-radius: 10px;
+  padding: 0.35rem 0.5rem;
+}
+
+.station-top-metrics__value {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.station-top-metrics__label {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--color-muted);
+  line-height: 1.2;
+}
+
+.station-top-metrics__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.station-top-metrics__row + .station-top-metrics__row {
+  margin-top: 0.15rem;
+}
+
+/* Механический счётчик (UI_description.md п.45) — см. OdometerNumber.tsx.
+   Каждая цифра — вертикальная лента 0..9, сдвинутая transform'ом; mask-image
+   гасит соседние цифры на входе/выходе, а не даёт им мелькать целиком. */
+.odometer {
+  display: inline-flex;
+  font-variant-numeric: tabular-nums;
+}
+
+.odometer-digit {
+  position: relative;
+  display: inline-block;
+  height: 1.2em;
+  width: 0.6em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%);
+}
+
+.odometer-digit__strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.odometer-digit__strip span {
+  height: 1.2em;
+  line-height: 1.2em;
+  text-align: center;
+}
+
+.odometer-static {
+  display: inline-block;
 }
 
 /* Доска постов (2026-09-14, прямая просьба пользователя) — наверху экрана

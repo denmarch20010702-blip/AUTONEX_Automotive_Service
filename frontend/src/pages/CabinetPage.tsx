@@ -478,39 +478,9 @@ export function CabinetPage() {
 
   return (
     <div>
-      <h1 className="step-title">Личный кабинет</h1>
-      <ProfilePanel client={client} onSaved={login} onDeleted={handleAccountDeleted} />
-
-      <div style={{ display: "flex", justifyContent: "center", gap: "1rem", marginBottom: "1.5rem" }}>
-        <button type="button" className="primary-button" onClick={() => navigate("/")}>
-          Записаться на услугу
-        </button>
-        <button type="button" className="ghost-button" onClick={logout}>
-          Выйти
-        </button>
-      </div>
-
-      {otherAccounts.length > 0 && (
-        <div style={{ textAlign: "center", marginBottom: "2rem" }}>
-          <p style={{ color: "var(--color-muted)", marginBottom: "0.5rem", fontSize: "0.9rem" }}>
-            Переключиться на другой аккаунт:
-          </p>
-          <div style={{ display: "flex", justifyContent: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-            {otherAccounts.map((c) => (
-              <button key={c.id} type="button" className="ghost-button" onClick={() => switchTo(c.id)}>
-                {c.name} ({c.email})
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {error && <div className="error-banner">{error}</div>}
-
-      {/* UI_description.md п.44 (2026-09-15): сезонный баннер про хранение
-          шин (B6) должен быть НАД остальными напоминаниями и закрываться
-          крестиком — до конца сезона больше не появляется (письмо в почте
-          при этом всё равно остаётся). */}
+      {/* UI_description.md п.45 (2026-09-15): баннер сезонного хранения шин
+          (B6) — под шапку меню, НАД написью "Личный кабинет" (был ниже, под
+          профилем и переключателем аккаунтов). */}
       {tireSeasonReminder?.active && (
         <div
           className="panel"
@@ -542,6 +512,35 @@ export function CabinetPage() {
           </p>
         </div>
       )}
+
+      <h1 className="step-title">Личный кабинет</h1>
+      <ProfilePanel client={client} onSaved={login} onDeleted={handleAccountDeleted} />
+
+      <div style={{ display: "flex", justifyContent: "center", gap: "1rem", marginBottom: "1.5rem" }}>
+        <button type="button" className="primary-button" onClick={() => navigate("/")}>
+          Записаться на услугу
+        </button>
+        <button type="button" className="ghost-button" onClick={logout}>
+          Выйти
+        </button>
+      </div>
+
+      {otherAccounts.length > 0 && (
+        <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+          <p style={{ color: "var(--color-muted)", marginBottom: "0.5rem", fontSize: "0.9rem" }}>
+            Переключиться на другой аккаунт:
+          </p>
+          <div style={{ display: "flex", justifyContent: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+            {otherAccounts.map((c) => (
+              <button key={c.id} type="button" className="ghost-button" onClick={() => switchTo(c.id)}>
+                {c.name} ({c.email})
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {error && <div className="error-banner">{error}</div>}
 
       {/* UI_description.md п.23: письмо-напоминание за день до записи (B3)
           пишется в email-заглушку, невидимую самому клиенту в интерфейсе —
@@ -637,6 +636,64 @@ export function CabinetPage() {
         )}
       </div>
 
+      {/* UI_description.md п.45 (2026-09-15): "поменять местами таблицы мои
+          записи и хранение шин" — "Мои записи" теперь выше "Хранения шин". */}
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Мои записи</h2>
+        </div>
+        {bookings.length === 0 && <p className="panel-empty">Записей пока нет.</p>}
+        {bookings.length > 0 && (
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Услуга</th>
+                  <th>Когда</th>
+                  <th>Статус</th>
+                  <th></th>
+                  <th>Доп. работы</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bookings.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.id}</td>
+                    <td>{b.services.map((s) => s.name).join(", ") || "—"}</td>
+                    <td>{formatSlotLabel(b.start_at)}</td>
+                    <td>
+                      <StatusIndicator status={b.status} />
+                      {b.status === "on_post" && b.service_ends_at && (
+                        <Countdown targetIso={b.service_ends_at} startedIso={b.on_post_started_at} />
+                      )}
+                      {b.status === "accepted" && <UpcomingCountdown targetIso={b.start_at} />}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+                        <RescheduleControl booking={b} onRescheduled={reload} onError={setError} />
+                        {CANCELLABLE.has(b.status) && (
+                          <button
+                            type="button"
+                            className="action-button danger"
+                            onClick={() => cancelBooking(b.id)}
+                          >
+                            Отменить
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <ClientAdditionalWorks bookingId={b.id} refreshKey={reloadTick} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <div className="panel">
         <div className="panel-header">
           <h2>Хранение шин</h2>
@@ -679,62 +736,6 @@ export function CabinetPage() {
             <TireSetArchiveTable entries={tireHistory} />
             <Pagination page={tireHistoryPage} total={tireHistoryTotal} pageSize={50} onChange={setTireHistoryPage} />
           </>
-        )}
-      </div>
-
-      <div className="panel">
-        <div className="panel-header">
-          <h2>Мои записи</h2>
-        </div>
-        {bookings.length === 0 && <p className="panel-empty">Записей пока нет.</p>}
-        {bookings.length > 0 && (
-          <div className="data-table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Услуга</th>
-                  <th>Когда</th>
-                  <th>Статус</th>
-                  <th></th>
-                  <th>Доп. работы</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bookings.map((b) => (
-                  <tr key={b.id}>
-                    <td>{b.id}</td>
-                    <td>{b.services.map((s) => s.name).join(", ") || "—"}</td>
-                    <td>{formatSlotLabel(b.start_at)}</td>
-                    <td>
-                      <StatusIndicator status={b.status} />
-                      {b.status === "on_post" && b.service_ends_at && (
-                        <Countdown targetIso={b.service_ends_at} />
-                      )}
-                      {b.status === "accepted" && <UpcomingCountdown targetIso={b.start_at} />}
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-                        <RescheduleControl booking={b} onRescheduled={reload} onError={setError} />
-                        {CANCELLABLE.has(b.status) && (
-                          <button
-                            type="button"
-                            className="action-button danger"
-                            onClick={() => cancelBooking(b.id)}
-                          >
-                            Отменить
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                    <td>
-                      <ClientAdditionalWorks bookingId={b.id} refreshKey={reloadTick} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         )}
       </div>
 

@@ -34,7 +34,14 @@ function formatUntil(ms: number): string {
   return `${minutes} мин ${String(seconds).padStart(2, "0")} с`;
 }
 
-export function Countdown({ targetIso }: { targetIso: string }) {
+// C3 (2026-09-15, доделано по просьбе пользователя — "живая трансляция
+// прогресса на посту"): `startedIso` — момент начала ТЕКУЩЕГО раунда работы
+// (`Booking.on_post_started_at`, своя точка отсчёта для основной услуги и
+// для каждого нового раунда доп. работы — см. app/services/robot_timer.py).
+// Процент считается на лету из двух готовых точек времени, без отдельного
+// SSE-потока "тиков прогресса" — тикает раз в секунду вместе с самим
+// обратным отсчётом.
+export function Countdown({ targetIso, startedIso }: { targetIso: string; startedIso?: string | null }) {
   const [remaining, setRemaining] = useState(() => new Date(targetIso).getTime() - Date.now());
 
   useEffect(() => {
@@ -44,10 +51,25 @@ export function Countdown({ targetIso }: { targetIso: string }) {
     return () => clearInterval(id);
   }, [targetIso]);
 
+  const progress = (() => {
+    if (!startedIso) return null;
+    const total = new Date(targetIso).getTime() - new Date(startedIso).getTime();
+    if (total <= 0) return null;
+    const elapsed = total - remaining;
+    return Math.min(100, Math.max(0, Math.round((elapsed / total) * 100)));
+  })();
+
   return (
     <span className="countdown-badge" title="Осталось до автоматического завершения этапа">
-      <ClockIcon />
-      {remaining > 0 ? formatRemaining(remaining) : "завершается…"}
+      <span className="countdown-badge__row">
+        <ClockIcon />
+        {remaining > 0 ? formatRemaining(remaining) : "завершается…"}
+      </span>
+      {progress !== null && (
+        <span className="countdown-progress" title={`Выполнено ${progress}%`}>
+          <span className="countdown-progress__bar" style={{ width: `${progress}%` }} />
+        </span>
+      )}
     </span>
   );
 }
@@ -69,8 +91,10 @@ export function UpcomingCountdown({ targetIso }: { targetIso: string }) {
 
   return (
     <span className="countdown-badge" title="Осталось до назначенного времени записи">
-      <ClockIcon />
-      {formatUntil(remaining)}
+      <span className="countdown-badge__row">
+        <ClockIcon />
+        {formatUntil(remaining)}
+      </span>
     </span>
   );
 }

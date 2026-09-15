@@ -16,8 +16,10 @@ from app.services.events import publish
 # Заметка пользователя (2026-09-13): после приёма машины на пост
 # обслуживание должно самостоятельно идти по таймеру — длительность равна
 # сумме длительностей выбранных услуг, по истечении статус меняется сам.
-# Это пилотная, урезанная реализация части C2 (без очереди/симуляции
-# сбоев — то будет доработано в самом C2, когда придёт черёд).
+# Случайный шанс сбоя из зафиксированного скоупа C1 сознательно не
+# реализован (решение пользователя 2026-09-15) — очередь задач (основная
+# услуга -> одобренные доп. работы по очереди) уже даёт наблюдаемое
+# "выполняет одну задачу за другой" через resolve_next_step ниже.
 scheduler = AsyncIOScheduler()
 
 
@@ -90,8 +92,12 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
         for w in newly_approved:
             w.execution_started = True
         booking.status = BookingStatus.ON_POST
-        new_ends_at = datetime.now(timezone.utc) + timedelta(minutes=extra_minutes)
+        now = datetime.now(timezone.utc)
+        new_ends_at = now + timedelta(minutes=extra_minutes)
         booking.service_ends_at = new_ends_at
+        # C2/C3: новый раунд работы на посту — своя точка отсчёта прогресса,
+        # не путать с началом основной услуги.
+        booking.on_post_started_at = now
         # UI_description.md п.35 (2026-09-14): реальный найденный баг —
         # `end_at` заявки не продлевался вместе с `service_ends_at`, а
         # именно `end_at` (не `service_ends_at`) используется во всех

@@ -77,7 +77,11 @@ export function ClientAdditionalWorks({ bookingId, refreshKey }: { bookingId: nu
               </span>
             ) : (
               <span style={{ marginLeft: "0.5rem", color: "var(--color-muted)" }}>
-                {w.status === "approved" ? "принято" : "отклонено"}
+                {w.status === "approved"
+                  ? w.execution_started
+                    ? "выполняется сейчас"
+                    : "принято, в очереди на посту"
+                  : "отклонено"}
               </span>
             )}
             {visitNeeded && visitNeeded.service_id !== null && (

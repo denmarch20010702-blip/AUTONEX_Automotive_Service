@@ -41,4 +41,6 @@ class BookingRead(BaseModel):
     # UI_description.md п.11 (таймер виден станции и клиенту) и п.12 (в
     # таблице станции должна быть видна изначально забронированная услуга).
     service_ends_at: datetime | None = None
+    # C3: начало текущего раунда работы на посту — для процента прогресса.
+    on_post_started_at: datetime | None = None
     services: list[ServiceRead] = []

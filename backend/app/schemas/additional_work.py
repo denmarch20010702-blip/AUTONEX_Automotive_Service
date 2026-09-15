@@ -38,4 +38,8 @@ class AdditionalWorkRead(BaseModel):
     scheduled_booking_id: int | None
     proposed_by: ProposedBy
     status: AdditionalWorkStatus
+    # C2 (2026-09-15): различает "согласовано, ждёт своей очереди на посту"
+    # от "уже выполняется прямо сейчас" — оба раньше выглядели одинаково
+    # ("согласовано") в UI, хотя это разные фазы одной и той же очереди задач.
+    execution_started: bool
     created_at: datetime

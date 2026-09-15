@@ -9,6 +9,18 @@ const STATUS_LABEL: Record<AdditionalWork["status"], string> = {
   declined: "отклонено",
 };
 
+// C2 (2026-09-15): очередь задач на посту — согласованная доп. работа не
+// начинает выполняться сама в момент согласования, а становится следующей
+// в очереди (execution_started=false) и запускается только когда до неё
+// реально дойдёт черёд (resolve_next_step в robot_timer.py). Различаем это
+// в UI, а не показываем одинаковое "согласовано" для обеих фаз.
+function statusLabel(w: AdditionalWork): string {
+  if (w.status === "approved") {
+    return w.execution_started ? "выполняется сейчас" : "в очереди на посту";
+  }
+  return STATUS_LABEL[w.status];
+}
+
 // Согласование доп. работ (B2) — станция предлагает, клиент отвечает в
 // своём кабинете. Здесь — сторона станции: список уже предложенного по
 // заявке + выбор новой работы кликом из каталога услуг (UI_description.md
@@ -65,9 +77,10 @@ export function AdditionalWorkPanel({
                   : w.status === "declined"
                     ? "var(--color-danger)"
                     : "var(--color-muted)",
+              fontWeight: w.status === "approved" && w.execution_started ? 700 : 400,
             }}
           >
-            {STATUS_LABEL[w.status]}
+            {statusLabel(w)}
           </span>
         </div>
       ))}

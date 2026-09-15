@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +15,77 @@ router = APIRouter(prefix="/station", tags=["station"])
 
 
 @router.get("/stats", response_model=StationStatsRead)
-async def get_station_stats(session: AsyncSession = Depends(get_session)) -> StationStats:
-    return await session.get(StationStats, STATION_STATS_ROW_ID)
+async def get_station_stats(session: AsyncSession = Depends(get_session)) -> dict:
+    stats = await session.get(StationStats, STATION_STATS_ROW_ID)
+
+    # UI_description.md п.45 (2026-09-15): компактный счётчик в правом верхнем
+    # углу — выручка "за сегодня" отдельно от "за всё время". Честное
+    # упрощение: "сегодня" — сутки по UTC (та же логика, что и везде в
+    # проекте про часовой пояс слотов, см. ARCHITECTURE.md), не по локальному
+    # времени станции/клиента.
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_revenue = (
+        await session.execute(
+            select(func.coalesce(func.sum(BookingArchive.total_price), 0)).where(
+                BookingArchive.status == BookingStatus.ISSUED,
+                BookingArchive.archived_at >= today_start,
+            )
+        )
+    ).scalar_one()
+
+    average_check = (
+        await session.execute(
+            select(func.avg(BookingArchive.total_price)).where(
+                BookingArchive.status == BookingStatus.ISSUED
+            )
+        )
+    ).scalar_one()
+
+    issued_count = (
+        await session.execute(
+            select(func.count()).where(BookingArchive.status == BookingStatus.ISSUED)
+        )
+    ).scalar_one()
+    cancelled_count = (
+        await session.execute(
+            select(func.count()).where(BookingArchive.status == BookingStatus.CANCELLED)
+        )
+    ).scalar_one()
+    completion_rate_percent = (
+        round(issued_count / (issued_count + cancelled_count) * 100, 1)
+        if (issued_count + cancelled_count) > 0
+        else None
+    )
+
+    # Конверсия по доп. работам: доля одобренных среди реально отвеченных
+    # (approved+declined, без ещё не отвеченных — тех тут и не может быть,
+    # заявка не архивируется с pending-предложением). Снимок хранится
+    # JSON-массивом на каждой архивной заявке — агрегируем в Python: объём
+    # для демо-проекта небольшой, а структура вложенная, не стоит городить
+    # SQL по JSON ради этого.
+    snapshots = (
+        await session.execute(select(BookingArchive.additional_works_snapshot))
+    ).scalars().all()
+    approved = 0
+    answered = 0
+    for snapshot in snapshots:
+        for work in snapshot:
+            if work["status"] == "approved":
+                approved += 1
+                answered += 1
+            elif work["status"] == "declined":
+                answered += 1
+    additional_work_conversion_percent = round(approved / answered * 100, 1) if answered > 0 else None
+
+    return {
+        "total_revenue": stats.total_revenue,
+        "today_revenue": today_revenue,
+        "average_check": average_check,
+        "issued_count": issued_count,
+        "cancelled_count": cancelled_count,
+        "completion_rate_percent": completion_rate_percent,
+        "additional_work_conversion_percent": additional_work_conversion_percent,
+    }
 
 
 @router.get("/actionable-count")

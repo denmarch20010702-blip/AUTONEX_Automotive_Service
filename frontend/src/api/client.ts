@@ -16,6 +16,8 @@ export interface Booking {
   end_at: string;
   status: string;
   service_ends_at: string | null;
+  // C3: начало текущего раунда работы на посту — для процента прогресса.
+  on_post_started_at: string | null;
   services: Service[];
 }
 
@@ -160,6 +162,13 @@ export function rescheduleBooking(bookingId: number, startAtIso: string): Promis
 
 export interface StationStats {
   total_revenue: string;
+  // UI_description.md п.45 (2026-09-15): компактная панель метрик станции.
+  today_revenue: string;
+  average_check: string | null;
+  issued_count: number;
+  cancelled_count: number;
+  completion_rate_percent: number | null;
+  additional_work_conversion_percent: number | null;
 }
 
 export function getStationStats(): Promise<StationStats> {
@@ -357,6 +366,8 @@ export interface AdditionalWork {
   scheduled_booking_id: number | null;
   proposed_by: "mechanic" | "ai";
   status: "pending" | "approved" | "declined";
+  // C2: "согласовано, ждёт очереди" vs "уже выполняется" — разные фазы.
+  execution_started: boolean;
   created_at: string;
 }
 

@@ -86,7 +86,7 @@ export function PostsBoard({
               </span>
             )}
             {state === "busy" && booking?.service_ends_at && (
-              <Countdown targetIso={booking.service_ends_at} />
+              <Countdown targetIso={booking.service_ends_at} startedIso={booking.on_post_started_at} />
             )}
             {state === "reserved" && booking && <UpcomingCountdown targetIso={booking.start_at} />}
           </div>

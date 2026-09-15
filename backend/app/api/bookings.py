@@ -380,8 +380,12 @@ async def update_booking_status(
     # только внутри задачи планировщика.
     on_post_duration_minutes = sum(s.duration_minutes for s in booking.services)
     if data.status == BookingStatus.ON_POST:
-        new_ends_at = datetime.now(timezone.utc) + timedelta(minutes=on_post_duration_minutes)
+        now = datetime.now(timezone.utc)
+        new_ends_at = now + timedelta(minutes=on_post_duration_minutes)
         booking.service_ends_at = new_ends_at
+        # C2/C3: точка отсчёта текущего раунда — для процента прогресса на
+        # доске постов (см. on_post_started_at в модели).
+        booking.on_post_started_at = now
         # UI_description.md п.35 (2026-09-14): если станция принимает машину
         # на пост позже запланированного `start_at` (реальная задержка), то
         # реальное занятие поста заканчивается позже, чем `end_at`,
@@ -531,7 +535,7 @@ async def update_booking_status(
 
     # Заметка пользователя: после приёма машины на пост обслуживание должно
     # само пойти по таймеру — длительность = сумма длительностей выбранных
-    # услуг. Пилотная часть C2 (без очереди/симуляции сбоев).
+    # услуг (C2).
     if data.status == BookingStatus.ON_POST:
         schedule_auto_advance(booking.id, timedelta(minutes=on_post_duration_minutes))
 

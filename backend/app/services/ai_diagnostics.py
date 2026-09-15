@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -35,9 +36,21 @@ from app.services.outbox_email import send_stub_email
 # состоянии машины — пробег с последнего ТО (тот же, что уже использует B5).
 # Pluggable-интерфейс ниже не привязан к этому конкретному сигналу — при
 # появлении новых полей на Car/Booking рефакторинг понадобится только внутри
-# _rule_based_pick/_llm_pick, не в вызывающем коде.
+# _rule_based_picks/_llm_picks, не в вызывающем коде.
 MILEAGE_THRESHOLD_KM = 10_000
-KEYWORD_HINTS = ("масл", "тормоз", "фильтр", "ремен", "диагностик", "жидкост", "свеч", "колод")
+
+# Найдено пользователем на практике (2026-09-15): с широким списком ключевых
+# слов (масло/тормоза/фильтр/...) и всего одной предлагаемой услугой на
+# заезд ИИ почти всегда выбирал одну и ту же случайную дешёвую услугу —
+# невзрачный результат. Решение пользователя: единый класс "регулярного ТО"
+# по одному ключевому слову "ТО", и предлагать ВСЕ подходящие услуги сразу,
+# а не одну. Матчим по границе слова (не голым substring) — иначе "ТО" ложно
+# сработало бы внутри "авТОмобиль", "авТО" и подобных слов.
+TO_KEYWORD_PATTERN = re.compile(r"(?<![а-яё])то(?![а-яё])", re.IGNORECASE)
+
+
+def _matches_keyword_class(service_name: str) -> bool:
+    return TO_KEYWORD_PATTERN.search(service_name) is not None
 
 
 @dataclass
@@ -65,42 +78,43 @@ async def _catalog_candidates(session: AsyncSession, booking: Booking) -> list[S
     return [s for s in services if s.id not in already]
 
 
-def _rule_based_pick(car: Car, candidates: list[Service]) -> DiagnosticSuggestion | None:
+def _rule_based_picks(car: Car, candidates: list[Service]) -> list[DiagnosticSuggestion]:
     if car.mileage_at_last_service is None:
-        return None  # нет истории ТО — нет базы для сравнения (тот же принцип, что и B5)
+        return []  # нет истории ТО — нет базы для сравнения (тот же принцип, что и B5)
     km_since = car.mileage - car.mileage_at_last_service
     if km_since < MILEAGE_THRESHOLD_KM:
-        return None
-    matches = [s for s in candidates if any(k in s.name.lower() for k in KEYWORD_HINTS)]
-    if not matches:
-        return None
-    pick = min(matches, key=lambda s: s.price)
+        return []
+    matches = [s for s in candidates if _matches_keyword_class(s.name)]
     confidence = min(0.95, 0.5 + (km_since - MILEAGE_THRESHOLD_KM) / (2 * MILEAGE_THRESHOLD_KM))
-    return DiagnosticSuggestion(
-        service_id=pick.id,
-        confidence=round(confidence, 2),
-        reason=(
-            f"{car.make} {car.model}: пробег с последнего ТО {km_since} км — "
-            f"похоже, пора проверить «{pick.name}»."
-        ),
-    )
+    return [
+        DiagnosticSuggestion(
+            service_id=match.id,
+            confidence=round(confidence, 2),
+            reason=(
+                f"{car.make} {car.model}: пробег с последнего ТО {km_since} км — "
+                f"похоже, пора на «{match.name}»."
+            ),
+        )
+        for match in matches
+    ]
 
 
-async def _llm_pick(car: Car, candidates: list[Service]) -> DiagnosticSuggestion | None:
+async def _llm_picks(car: Car, candidates: list[Service]) -> list[DiagnosticSuggestion]:
     if not candidates:
-        return None
+        return []
     catalog_text = "\n".join(
         f"- id={s.id}: {s.name} ({s.price} ₽, {s.duration_minutes} мин)" for s in candidates
     )
     prompt = (
         "Ты — диагностический ассистент автосервиса. По профилю автомобиля определи, "
-        "стоит ли предложить клиенту ровно одну дополнительную услугу из каталога прямо сейчас.\n"
+        "какие дополнительные услуги из каталога стоит предложить клиенту прямо сейчас "
+        "(может быть ни одной, одна или несколько).\n"
         f"Автомобиль: {car.make} {car.model}, текущий пробег {car.mileage} км, "
         f"пробег на момент последнего ТО: {car.mileage_at_last_service}.\n"
         f"Каталог доступных услуг:\n{catalog_text}\n\n"
-        'Ответь СТРОГО в виде JSON без пояснений вокруг: '
-        '{"service_id": <int или null>, "confidence": <число 0..1>, "reason": "<кратко по-русски>"}. '
-        "Если предлагать нечего — service_id: null."
+        'Ответь СТРОГО в виде JSON-массива без пояснений вокруг: '
+        '[{"service_id": <int>, "confidence": <число 0..1>, "reason": "<кратко по-русски>"}, ...]. '
+        "Если предлагать нечего — пустой массив []."
     )
     async with httpx.AsyncClient(timeout=10.0) as http_client:
         response = await http_client.post(
@@ -112,52 +126,60 @@ async def _llm_pick(car: Car, candidates: list[Service]) -> DiagnosticSuggestion
             },
             json={
                 "model": settings.llm_model,
-                "max_tokens": 300,
+                "max_tokens": 500,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
         response.raise_for_status()
         text = response.json()["content"][0]["text"]
 
-    data = json.loads(text)
-    service_id = data.get("service_id")
-    if service_id is None:
-        return None
-    match = next((s for s in candidates if s.id == service_id), None)
-    if match is None:
-        return None
-    return DiagnosticSuggestion(
-        service_id=match.id,
-        confidence=float(data.get("confidence", 0.5)),
-        reason=str(data.get("reason", "")),
-    )
+    items = json.loads(text)
+    by_id = {s.id: s for s in candidates}
+    suggestions = []
+    for item in items:
+        service_id = item.get("service_id")
+        if service_id in by_id:
+            suggestions.append(
+                DiagnosticSuggestion(
+                    service_id=service_id,
+                    confidence=float(item.get("confidence", 0.5)),
+                    reason=str(item.get("reason", "")),
+                )
+            )
+    return suggestions
 
 
-async def generate_diagnostic_suggestion(
+async def generate_diagnostic_suggestions(
     session: AsyncSession, booking: Booking, car: Car
-) -> DiagnosticSuggestion | None:
+) -> list[DiagnosticSuggestion]:
     """Pluggable по конструкции (см. C1/ARCHITECTURE.md): реальный вызов LLM,
     если в `.env` задан LLM_API_KEY, иначе rule-based генератор с тем же
     контрактом. Любой сбой LLM (сеть, невалидный JSON, лимиты) — честный
     фолбэк на rule-based, а не ошибка наружу: диагностика необязательна для
-    приёма машины на пост."""
+    приёма машины на пост.
+
+    Решение пользователя (2026-09-15): предлагать ВСЕ подходящие услуги
+    сразу, не одну — сейчас это простое совпадение по единому классу "ТО"
+    (см. TO_KEYWORD_PATTERN); в будущем здесь появится нестатическая логика
+    (см. docstring _rule_based_picks и ARCHITECTURE.md, раздел про C4)."""
     candidates = await _catalog_candidates(session, booking)
     if not candidates:
-        return None
+        return []
     if settings.llm_api_key:
         try:
-            return await _llm_pick(car, candidates)
+            return await _llm_picks(car, candidates)
         except Exception:
             pass
-    return _rule_based_pick(car, candidates)
+    return _rule_based_picks(car, candidates)
 
 
-async def run_ai_diagnostic(session: AsyncSession, booking_id: int) -> AdditionalWork | None:
+async def run_ai_diagnostic(session: AsyncSession, booking_id: int) -> list[AdditionalWork]:
     """Точка входа, вызываемая сразу после приёма машины на пост (см.
     app/api/bookings.py::update_booking_status). Сама коммитит свою транзакцию
     отдельно от коммита перехода в on_post — вызывающий код оборачивает
     вызов в try/except, чтобы сбой диагностики никогда не ронял сам приём
-    машины на пост."""
+    машины на пост. Возвращает все созданные предложения (может быть
+    несколько за один заезд, см. generate_diagnostic_suggestions)."""
     booking = (
         await session.execute(
             select(Booking)
@@ -170,38 +192,45 @@ async def run_ai_diagnostic(session: AsyncSession, booking_id: int) -> Additiona
         )
     ).scalar_one_or_none()
     if booking is None:
-        return None
+        return []
 
-    suggestion = await generate_diagnostic_suggestion(session, booking, booking.car)
-    if suggestion is None:
-        return None
+    suggestions = await generate_diagnostic_suggestions(session, booking, booking.car)
+    if not suggestions:
+        return []
 
-    service = await session.get(Service, suggestion.service_id)
-    if service is None:
-        return None
+    created: list[AdditionalWork] = []
+    for suggestion in suggestions:
+        service = await session.get(Service, suggestion.service_id)
+        if service is None:
+            continue
 
-    work = AdditionalWork(
-        booking_id=booking.id,
-        description=service.name,
-        price=service.price,
-        duration_minutes=service.duration_minutes,
-        service_id=service.id,
-        proposed_by=ProposedBy.AI,
-    )
-    session.add(work)
+        work = AdditionalWork(
+            booking_id=booking.id,
+            description=service.name,
+            price=service.price,
+            duration_minutes=service.duration_minutes,
+            service_id=service.id,
+            proposed_by=ProposedBy.AI,
+        )
+        session.add(work)
+        created.append(work)
 
-    await send_stub_email(
-        session,
-        to=booking.client.email,
-        subject=f"Заявка №{booking.id}: ИИ-диагностика нашла повод для доп. работы",
-        body=(
-            f"{suggestion.reason} Предложение: {service.name} — {service.price} ₽ "
-            f"(вероятность {round(suggestion.confidence * 100)}%). "
-            "Подтвердите или отклоните в личном кабинете."
-        ),
-    )
+        await send_stub_email(
+            session,
+            to=booking.client.email,
+            subject=f"Заявка №{booking.id}: ИИ-диагностика нашла повод для доп. работы",
+            body=(
+                f"{suggestion.reason} Предложение: {service.name} — {service.price} ₽ "
+                f"(вероятность {round(suggestion.confidence * 100)}%). "
+                "Подтвердите или отклоните в личном кабинете."
+            ),
+        )
+
+    if not created:
+        return []
 
     await session.commit()
-    await session.refresh(work)
-    publish("additional_work_proposed", AdditionalWorkRead.model_validate(work).model_dump(mode="json"))
-    return work
+    for work in created:
+        await session.refresh(work)
+        publish("additional_work_proposed", AdditionalWorkRead.model_validate(work).model_dump(mode="json"))
+    return created
