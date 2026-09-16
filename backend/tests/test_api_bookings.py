@@ -1359,3 +1359,89 @@ async def test_station_actionable_count_reflects_bookings_needing_a_decision(cli
         assert after == before  # снова требует решения — теперь "выдать"
     finally:
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+async def make_seasonal_swap_booking(client: AsyncClient, days_offset: int) -> tuple[int, int, int]:
+    """UI_description.md п.47 (2026-09-16): заявка на защищённую услугу
+    "Сезонная замена шин" — единственную, где предлагается вопрос "сдать
+    шины на хранение или нет" (см. POST /bookings/{id}/tire-storage-offer/decline)."""
+    client_id = car_id = None
+    try:
+        client_id, car_id = await make_client_car(client)
+        services = (await client.get("/catalog")).json()
+        service_id = next(s["id"] for s in services if s["name"] == "Сезонная замена шин")
+        day = date.today() + timedelta(days=days_offset)
+        slots = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [service_id], "date": day_start_iso(day)},
+            )
+        ).json()
+        if not slots:
+            pytest.skip(f"на день +{days_offset} не осталось свободных слотов — занято живыми данными")
+        resp = await client.post(
+            "/bookings",
+            json={
+                "client_id": client_id,
+                "car_id": car_id,
+                "start_at": slots[0]["start_at"],
+                "service_ids": [service_id],
+            },
+        )
+        assert resp.status_code == 201
+        return client_id, car_id, resp.json()["id"]
+    except BaseException:
+        if car_id is not None:
+            await client.delete(f"/cars/{car_id}")
+        if client_id is not None:
+            await client.delete(f"/clients/{client_id}")
+        raise
+
+
+@pytest.mark.asyncio
+async def test_decline_tire_storage_offer_happy_path(client: AsyncClient) -> None:
+    client_id, car_id, booking_id = await make_seasonal_swap_booking(client, 560)
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        assert resp.json()["tire_offer_declined"] is False
+
+        resp = await client.post(f"/bookings/{booking_id}/tire-storage-offer/decline")
+        assert resp.status_code == 200
+        assert resp.json()["tire_offer_declined"] is True
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=None)
+
+
+@pytest.mark.asyncio
+async def test_decline_tire_storage_offer_requires_on_post(client: AsyncClient) -> None:
+    client_id, car_id, booking_id = await make_seasonal_swap_booking(client, 561)
+    try:
+        # Заявка ещё в "accepted" — машина не на посту.
+        resp = await client.post(f"/bookings/{booking_id}/tire-storage-offer/decline")
+        assert resp.status_code == 409
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=None)
+
+
+@pytest.mark.asyncio
+async def test_decline_tire_storage_offer_wrong_service_rejected(client: AsyncClient) -> None:
+    # Обычная (не защищённая) услуга — вопрос про хранение шин к ней не
+    # относится, вне зависимости от статуса заявки.
+    client_id, car_id, service_id, booking_id = await make_booking(client, 562)
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking_id}/tire-storage-offer/decline")
+        assert resp.status_code == 409
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_decline_tire_storage_offer_nonexistent_booking_404(client: AsyncClient) -> None:
+    resp = await client.post("/bookings/999999999/tire-storage-offer/decline")
+    assert resp.status_code == 404

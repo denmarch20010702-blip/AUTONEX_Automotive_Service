@@ -32,3 +32,6 @@ class ServiceRead(BaseModel):
     name: str
     duration_minutes: int
     price: Decimal
+    # UI_description.md п.47: проводник к обязательному функционалу (B1) —
+    # каталог не даёт переименовать/удалить, только менять время/цену.
+    protected: bool

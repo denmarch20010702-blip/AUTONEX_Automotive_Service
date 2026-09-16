@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
+  declineTireStorageOffer,
   deleteCar,
   deleteClient,
   dismissTireSeasonReminder,
@@ -51,24 +52,60 @@ function formatDateOnly(isoDate: string): string {
   return `${day}.${month}.${year}`;
 }
 
-// Хранение шин (B1) — issued_at === null означает "на хранении сейчас".
-function TireSetRow({
-  car,
+// UI_description.md п.47 (2026-09-16): сдать/забрать шины — больше не
+// голая кнопка в кабинете, а действие, привязанное к реальному визиту на
+// одну из двух защищённых услуг, пока машина физически на посту (иначе
+// backend вернёт 409 — см. app/api/tire_sets.py). "Сезонная замена шин"
+// дополнительно предлагает вопрос "сдать шины на хранение или нет"
+// (согласие — по кнопке ниже; отказ фиксируется отдельным эндпоинтом,
+// чтобы не спрашивать повторно в рамках этого же визита); "Получить/сдать
+// шины" — отдельный визит именно за этим, без вопроса.
+const SEASONAL_TIRE_SWAP_SERVICE_NAME = "Сезонная замена шин";
+const TIRE_VISIT_SERVICE_NAME = "Получить/сдать шины";
+
+// Действие про шины теперь живёт прямо в строке заявки в "Мои записи" (по
+// прямой правке пользователя 2026-09-16, после того как вопрос "сдать на
+// хранение?" был найден незаметным в отдельной таблице ниже) — рядом с тем
+// же местом, где заявке предлагаются доп. работы. Ничего не рисует для
+// заявок, не находящихся прямо сейчас на посту по одной из двух защищённых
+// услуг — не захламляет остальные строки.
+function TireStorageAction({
+  booking,
   activeSet,
   onChanged,
   onError,
 }: {
-  car: CarInfo;
+  booking: Booking;
   activeSet: TireSet | undefined;
   onChanged: () => void;
   onError: (message: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
 
+  const canHandOverNow = booking.services.some((s) => s.name === TIRE_VISIT_SERVICE_NAME);
+  const isSeasonalSwapVisit = booking.services.some(
+    (s) => s.name === SEASONAL_TIRE_SWAP_SERVICE_NAME,
+  );
+  if (booking.status !== "on_post" || (!canHandOverNow && !isSeasonalSwapVisit)) {
+    return null;
+  }
+
   const store = async () => {
     setBusy(true);
     try {
-      await storeTireSet({ client_id: car.client_id, car_id: car.id });
+      await storeTireSet({ client_id: booking.client_id, car_id: booking.car_id });
+      onChanged();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decline = async () => {
+    setBusy(true);
+    try {
+      await declineTireStorageOffer(booking.id);
       onChanged();
     } catch (err) {
       onError((err as Error).message);
@@ -79,7 +116,7 @@ function TireSetRow({
 
   const issue = async () => {
     if (!activeSet) return;
-    if (!window.confirm(`Забрать шины для ${car.make} ${car.model}?`)) return;
+    if (!window.confirm("Забрать шины сейчас?")) return;
     setBusy(true);
     try {
       await issueTireSet(activeSet.id);
@@ -92,6 +129,49 @@ function TireSetRow({
   };
 
   return (
+    <div
+      style={{
+        marginTop: "0.5rem",
+        paddingTop: "0.5rem",
+        borderTop: "1px dashed var(--color-border)",
+      }}
+    >
+      {activeSet ? (
+        canHandOverNow ? (
+          <button type="button" className="action-button" disabled={busy} onClick={issue}>
+            Забрать шины
+          </button>
+        ) : (
+          <span style={{ color: "var(--color-muted)" }}>
+            Забрать можно во время визита на «{TIRE_VISIT_SERVICE_NAME}»
+          </span>
+        )
+      ) : isSeasonalSwapVisit && booking.tire_offer_declined ? (
+        <span style={{ color: "var(--color-muted)" }}>Хранение отклонено в этом визите</span>
+      ) : isSeasonalSwapVisit ? (
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+          <span>Сдать снятые шины на хранение?</span>
+          <button type="button" className="action-button" disabled={busy} onClick={store}>
+            Да, сдать
+          </button>
+          <button type="button" className="ghost-button" disabled={busy} onClick={decline}>
+            Нет
+          </button>
+        </div>
+      ) : (
+        <button type="button" className="action-button" disabled={busy} onClick={store}>
+          Сдать на хранение
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Таблица "Хранение шин" (B1) — теперь только история/текущий статус,
+// без кнопок действия (см. TireStorageAction выше). issued_at === null
+// означает "на хранении сейчас".
+function TireStorageStatusRow({ car, activeSet }: { car: CarInfo; activeSet: TireSet | undefined }) {
+  return (
     <tr>
       <td>
         {car.make} {car.model}
@@ -100,18 +180,7 @@ function TireSetRow({
         {activeSet ? (
           <>На хранении с {new Date(activeSet.stored_at).toLocaleDateString()}</>
         ) : (
-          <span style={{ color: "var(--color-muted)" }}>Не сдавались</span>
-        )}
-      </td>
-      <td>
-        {activeSet ? (
-          <button type="button" className="action-button" disabled={busy} onClick={issue}>
-            Забрать
-          </button>
-        ) : (
-          <button type="button" className="action-button" disabled={busy} onClick={store}>
-            Сдать на хранение
-          </button>
+          <span style={{ color: "var(--color-muted)" }}>Не хранятся</span>
         )}
       </td>
     </tr>
@@ -649,6 +718,7 @@ export function CabinetPage() {
               <thead>
                 <tr>
                   <th>ID</th>
+                  <th>Автомобиль</th>
                   <th>Услуга</th>
                   <th>Когда</th>
                   <th>Статус</th>
@@ -657,9 +727,12 @@ export function CabinetPage() {
                 </tr>
               </thead>
               <tbody>
-                {bookings.map((b) => (
+                {bookings.map((b) => {
+                  const car = cars.find((c) => c.id === b.car_id);
+                  return (
                   <tr key={b.id}>
                     <td>{b.id}</td>
+                    <td>{car ? `${car.make} ${car.model}` : `#${b.car_id}`}</td>
                     <td>{b.services.map((s) => s.name).join(", ") || "—"}</td>
                     <td>{formatSlotLabel(b.start_at)}</td>
                     <td>
@@ -685,9 +758,16 @@ export function CabinetPage() {
                     </td>
                     <td>
                       <ClientAdditionalWorks bookingId={b.id} refreshKey={reloadTick} />
+                      <TireStorageAction
+                        booking={b}
+                        activeSet={tireSets.find((t) => t.car_id === b.car_id && t.issued_at === null)}
+                        onChanged={reload}
+                        onError={setError}
+                      />
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -707,17 +787,14 @@ export function CabinetPage() {
                 <tr>
                   <th>Автомобиль</th>
                   <th>Статус</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {cars.map((car) => (
-                  <TireSetRow
+                  <TireStorageStatusRow
                     key={car.id}
                     car={car}
                     activeSet={tireSets.find((t) => t.car_id === car.id && t.issued_at === null)}
-                    onChanged={reload}
-                    onError={setError}
                   />
                 ))}
               </tbody>

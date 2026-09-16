@@ -5,6 +5,9 @@ export interface Service {
   name: string;
   duration_minutes: number;
   price: string;
+  // UI_description.md п.47: "Сезонная замена шин"/"Получить/сдать шины" —
+  // проводники к обязательному хранению шин, их нельзя переименовать/удалить.
+  protected: boolean;
 }
 
 export interface Booking {
@@ -19,6 +22,9 @@ export interface Booking {
   // C3: начало текущего раунда работы на посту — для процента прогресса.
   on_post_started_at: string | null;
   services: Service[];
+  // UI_description.md п.47: клиент уже ответил "не хранить" на вопрос про
+  // сезонную замену — не спрашивать повторно в рамках этого же визита.
+  tire_offer_declined: boolean;
 }
 
 export interface SlotOption {
@@ -148,6 +154,14 @@ export function updateBookingStatus(bookingId: number, status: string): Promise<
   return request<Booking>(`/bookings/${bookingId}/status`, {
     method: "POST",
     body: JSON.stringify({ status }),
+  });
+}
+
+// UI_description.md п.47: клиент отказывается от сдачи шин на хранение во
+// время визита на "Сезонная замена шин" — доступно, пока машина на посту.
+export function declineTireStorageOffer(bookingId: number): Promise<Booking> {
+  return request<Booking>(`/bookings/${bookingId}/tire-storage-offer/decline`, {
+    method: "POST",
   });
 }
 
@@ -368,6 +382,10 @@ export interface AdditionalWork {
   status: "pending" | "approved" | "declined";
   // C2: "согласовано, ждёт очереди" vs "уже выполняется" — разные фазы.
   execution_started: boolean;
+  // C5 (2026-09-16): только для оверсайта станции — клиентский кабинет эти
+  // поля намеренно не показывает (см. AdditionalWorkPanel.tsx).
+  ai_confidence: number | null;
+  ai_reason: string | null;
   created_at: string;
 }
 

@@ -20,7 +20,7 @@ from app.models import (
 )
 from app.schemas.additional_work import AdditionalWorkRead
 from app.services.events import publish
-from app.services.outbox_email import send_stub_email
+from app.services.outbox_email import notify_pending_additional_works
 
 # C4 (2026-09-15) — "AI Diagnostic Assistant" из buisness.md: запускается
 # сразу после приёма машины на пост, параллельно с началом основной услуги
@@ -86,14 +86,17 @@ def _rule_based_picks(car: Car, candidates: list[Service]) -> list[DiagnosticSug
         return []
     matches = [s for s in candidates if _matches_keyword_class(s.name)]
     confidence = min(0.95, 0.5 + (km_since - MILEAGE_THRESHOLD_KM) / (2 * MILEAGE_THRESHOLD_KM))
+    # Найдено пользователем на практике (2026-09-16): при нескольких
+    # подходящих услугах сразу причина повторяла марку/модель/пробег машины
+    # в КАЖДОЙ строке панели доп. работ на станции — раздувало колонку без
+    # пользы (контекст заявки/машины уже виден на самой странице станции).
+    # Причина станции нужна для оверсайта конкретно ЭТОЙ рекомендации, а не
+    # для повторного напоминания, какая это машина.
     return [
         DiagnosticSuggestion(
             service_id=match.id,
             confidence=round(confidence, 2),
-            reason=(
-                f"{car.make} {car.model}: пробег с последнего ТО {km_since} км — "
-                f"похоже, пора на «{match.name}»."
-            ),
+            reason=f"Плановое ТО по пробегу — рекомендуется «{match.name}».",
         )
         for match in matches
     ]
@@ -114,6 +117,8 @@ async def _llm_picks(car: Car, candidates: list[Service]) -> list[DiagnosticSugg
         f"Каталог доступных услуг:\n{catalog_text}\n\n"
         'Ответь СТРОГО в виде JSON-массива без пояснений вокруг: '
         '[{"service_id": <int>, "confidence": <число 0..1>, "reason": "<кратко по-русски>"}, ...]. '
+        "reason — только про эту конкретную услугу, без повтора марки/модели/пробега машины "
+        "(они не должны повторяться в каждой причине, если предложено несколько услуг). "
         "Если предлагать нечего — пустой массив []."
     )
     async with httpx.AsyncClient(timeout=10.0) as http_client:
@@ -211,23 +216,23 @@ async def run_ai_diagnostic(session: AsyncSession, booking_id: int) -> list[Addi
             duration_minutes=service.duration_minutes,
             service_id=service.id,
             proposed_by=ProposedBy.AI,
+            # C5 (2026-09-16): причина/уверенность — только для оверсайта
+            # станции (AdditionalWorkPanel.tsx), не для клиента и не для
+            # письма ниже (единое нейтральное письмо для ИИ и мастера).
+            ai_confidence=suggestion.confidence,
+            ai_reason=suggestion.reason,
         )
         session.add(work)
         created.append(work)
 
-        await send_stub_email(
-            session,
-            to=booking.client.email,
-            subject=f"Заявка №{booking.id}: ИИ-диагностика нашла повод для доп. работы",
-            body=(
-                f"{suggestion.reason} Предложение: {service.name} — {service.price} ₽ "
-                f"(вероятность {round(suggestion.confidence * 100)}%). "
-                "Подтвердите или отклоните в личном кабинете."
-            ),
-        )
-
     if not created:
         return []
+
+    # C5 (2026-09-16, прямая просьба пользователя): ОДНО письмо на весь
+    # текущий список неотвеченных предложений — не по письму на каждую
+    # найденную услугу, и без упоминания ИИ (клиенту не важно, кто
+    # предложил, — тот же нейтральный текст, что и у предложения мастера).
+    await notify_pending_additional_works(session, booking.id, booking.client.email)
 
     await session.commit()
     for work in created:

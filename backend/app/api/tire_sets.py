@@ -6,12 +6,37 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.session import get_session
-from app.models import Car, Client, TireSet, TireSetArchive
+from app.models import Booking, BookingStatus, Car, Client, Service, TireSet, TireSetArchive
 from app.schemas.tire_set import TireSetArchiveRead, TireSetCreate, TireSetRead
 
 router = APIRouter(prefix="/tire-sets", tags=["tire-sets"])
+
+# UI_description.md п.47 (2026-09-16): хранение шин больше не голая кнопка —
+# и сдача, и выдача возможны только пока клиент физически на посту по одной
+# из этих двух услуг (см. миграцию 151f2fa88e1c, где они заведены и защищены
+# от переименования — сопоставление по имени ниже иначе бы сломалось).
+SEASONAL_TIRE_SWAP_SERVICE_NAME = "Сезонная замена шин"
+TIRE_VISIT_SERVICE_NAME = "Получить/сдать шины"
+
+
+async def _find_on_post_booking_for_service(
+    session: AsyncSession, car_id: int, service_names: set[str]
+) -> Booking | None:
+    return (
+        await session.execute(
+            select(Booking)
+            .join(Booking.services)
+            .where(
+                Booking.car_id == car_id,
+                Booking.status == BookingStatus.ON_POST,
+                Service.name.in_(service_names),
+            )
+            .options(selectinload(Booking.services))
+        )
+    ).scalars().first()
 
 
 @router.post("", response_model=TireSetRead, status_code=201)
@@ -26,6 +51,19 @@ async def store_tire_set(
         raise HTTPException(status_code=404, detail="Автомобиль не найден")
     if car.client_id != data.client_id:
         raise HTTPException(status_code=403, detail="Автомобиль не принадлежит этому клиенту")
+
+    booking = await _find_on_post_booking_for_service(
+        session, data.car_id, {SEASONAL_TIRE_SWAP_SERVICE_NAME, TIRE_VISIT_SERVICE_NAME}
+    )
+    if booking is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Сдать шины на хранение можно только во время визита на "
+                f"«{SEASONAL_TIRE_SWAP_SERVICE_NAME}» или «{TIRE_VISIT_SERVICE_NAME}», "
+                "пока машина на посту"
+            ),
+        )
 
     tire_set = TireSet(client_id=data.client_id, car_id=data.car_id)
     session.add(tire_set)
@@ -95,6 +133,21 @@ async def issue_tire_set(
         raise HTTPException(status_code=404, detail="Комплект шин не найден")
     if tire_set.issued_at is not None:
         raise HTTPException(status_code=409, detail="Комплект уже выдан")
+
+    # UI_description.md п.47: получить шины обратно можно только визитом на
+    # "Получить/сдать шины" — не через "Сезонная замена шин" (та только про
+    # сдачу) и не голым кликом без визита вообще.
+    booking = await _find_on_post_booking_for_service(
+        session, tire_set.car_id, {TIRE_VISIT_SERVICE_NAME}
+    )
+    if booking is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Забрать шины можно только во время визита на «{TIRE_VISIT_SERVICE_NAME}», "
+                "пока машина на посту"
+            ),
+        )
 
     issued_at = datetime.now(timezone.utc)
 

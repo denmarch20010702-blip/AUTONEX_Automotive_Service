@@ -43,4 +43,7 @@ class BookingRead(BaseModel):
     service_ends_at: datetime | None = None
     # C3: начало текущего раунда работы на посту — для процента прогресса.
     on_post_started_at: datetime | None = None
+    # UI_description.md п.47: клиент отклонил предложение сдать шины во
+    # время визита на "Сезонная замена шин" — прячет вопрос в кабинете.
+    tire_offer_declined: bool = False
     services: list[ServiceRead] = []

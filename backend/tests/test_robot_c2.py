@@ -11,9 +11,10 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
 
 from app.db.session import async_session
-from app.models import AdditionalWork, Booking, BookingArchive
+from app.models import AdditionalWork, Booking, BookingArchive, Client, OutboxEmail
 
 
 def unique_email() -> str:
@@ -161,3 +162,60 @@ async def test_approved_work_waits_in_queue_while_a_sibling_is_still_pending(cli
         await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
         await client.delete(f"/catalog/{extra_a}")
         await client.delete(f"/catalog/{extra_b}")
+
+
+async def outbox_subjects_for(email: str) -> list[str]:
+    async with async_session() as session:
+        return (
+            await session.execute(select(OutboxEmail.subject).where(OutboxEmail.to == email))
+        ).scalars().all()
+
+
+@pytest.mark.asyncio
+async def test_car_ready_notification_sent_once_via_auto_timer(client: AsyncClient) -> None:
+    # C5 (2026-09-16, прямая просьба пользователя): клиент должен узнать,
+    # что машина готова, тем же способом (письмо-заглушка), что и остальные
+    # уведомления — раньше такого письма не было вообще.
+    from helpers import make_startable_now
+
+    from app.services.robot_timer import _auto_advance
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 405)
+    try:
+        client_email = (await client.get(f"/clients/{client_id}")).json()["email"]
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        await _auto_advance(booking_id)
+        assert (await client.get(f"/bookings/{booking_id}")).json()["status"] == "ready"
+
+        subjects = await outbox_subjects_for(client_email)
+        ready_emails = [s for s in subjects if s.endswith("машина готова")]
+        assert len(ready_emails) == 1
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_car_ready_notification_sent_once_via_manual_button(client: AsyncClient) -> None:
+    # Ручная кнопка "Готово" на станции идёт другим путём (прямо через
+    # update_booking_status, минуя resolve_next_step) — должна давать тот
+    # же результат: ровно одно письмо, не два и не ноль.
+    from helpers import make_startable_now
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 406)
+    try:
+        client_email = (await client.get(f"/clients/{client_id}")).json()["email"]
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "ready"})
+        assert resp.status_code == 200
+
+        subjects = await outbox_subjects_for(client_email)
+        ready_emails = [s for s in subjects if s.endswith("машина готова")]
+        assert len(ready_emails) == 1
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)

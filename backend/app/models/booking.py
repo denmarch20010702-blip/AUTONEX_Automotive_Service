@@ -65,6 +65,10 @@ class Booking(Base):
     # флаг гарантирует это при периодическом опросе (app/services/reminders.py),
     # а не полагается на точную привязку к моменту "минус 24 часа".
     reminder_sent: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # UI_description.md п.47 (2026-09-16): клиент ответил "нет" на вопрос
+    # "сдать шины на хранение?" во время визита на "Сезонная замена шин" —
+    # не задавать вопрос повторно за ЭТОТ же визит (см. app/api/tire_sets.py).
+    tire_offer_declined: Mapped[bool] = mapped_column(default=False, server_default="false")
 
     client: Mapped["Client"] = relationship(back_populates="bookings")
     car: Mapped["Car"] = relationship(back_populates="bookings")

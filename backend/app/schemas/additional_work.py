@@ -12,8 +12,13 @@ class AdditionalWorkCreate(BaseModel):
     # UI_description.md п.19: доп. работа выбирается кликом из каталога
     # услуг, а не вводится вручную — эндпоинт сам берёт название/цену/
     # длительность из выбранной услуги (см. app/api/additional_works.py).
+    #
+    # C5 (2026-09-16): `proposed_by` раньше было полем запроса — временная
+    # ручка, которую можно было дёрнуть вручную через API без реального
+    # ИИ-расчёта. Убрано: этот публичный эндпоинт — только для мастера,
+    # `proposed_by=ai` возможно ТОЛЬКО через внутренний вызов
+    # run_ai_diagnostic (app/services/ai_diagnostics.py), не через API.
     service_id: int
-    proposed_by: ProposedBy = ProposedBy.MECHANIC
 
 
 class AdditionalWorkRespond(BaseModel):
@@ -42,4 +47,8 @@ class AdditionalWorkRead(BaseModel):
     # от "уже выполняется прямо сейчас" — оба раньше выглядели одинаково
     # ("согласовано") в UI, хотя это разные фазы одной и той же очереди задач.
     execution_started: bool
+    # C5 (2026-09-16): видно только станции (см. AdditionalWorkPanel.tsx) —
+    # клиентский кабинет эти два поля намеренно не показывает.
+    ai_confidence: float | None
+    ai_reason: str | None
     created_at: datetime

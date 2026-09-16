@@ -60,6 +60,14 @@ class AdditionalWork(Base):
         ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True
     )
     proposed_by: Mapped[ProposedBy] = mapped_column(Enum(ProposedBy, name="proposed_by"))
+    # C5 (2026-09-16): причина и уверенность ИИ-диагностики (C4) — только для
+    # оверсайта станции (мастер видит, почему ИИ это предложил), НЕ для
+    # клиента — прямая просьба пользователя: клиент не должен видеть, кто
+    # предложил доп. работу, ИИ или мастер, потому что в будущем станция
+    # будет работать полностью автоматизированно и это различие исчезнет
+    # как понятие. Пусто для proposed_by=mechanic.
+    ai_confidence: Mapped[float | None] = mapped_column(default=None)
+    ai_reason: Mapped[str | None] = mapped_column(Text, default=None)
     status: Mapped[AdditionalWorkStatus] = mapped_column(
         Enum(AdditionalWorkStatus, name="additional_work_status"),
         default=AdditionalWorkStatus.PENDING,

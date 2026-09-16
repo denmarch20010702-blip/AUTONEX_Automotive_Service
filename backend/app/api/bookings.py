@@ -30,7 +30,7 @@ from app.schemas.booking import BookingCreate, BookingReschedule, BookingRead, B
 from app.services.ai_diagnostics import run_ai_diagnostic
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
-from app.services.robot_timer import schedule_auto_advance
+from app.services.robot_timer import notify_car_ready, schedule_auto_advance
 from app.services.slots import (
     car_is_free,
     get_available_slots,
@@ -374,6 +374,12 @@ async def update_booking_status(
 
     booking.status = data.status
 
+    # C5 (2026-09-16): письмо о готовности машины — покрывает ручной путь
+    # (кнопка "Готово" на станции идёт прямо сюда, минуя resolve_next_step в
+    # robot_timer.py, где та же проверка есть для автоматического пути).
+    if data.status == BookingStatus.READY and previous_status != BookingStatus.READY:
+        await notify_car_ready(session, booking)
+
     # UI_description.md п.11: таймер до завершения должен быть виден и
     # станции, и клиенту — точку отсчёта фиксируем на самой заявке в момент
     # приёма на пост (тот же момент, что запускает автотаймер ниже), а не
@@ -553,3 +559,32 @@ async def update_booking_status(
                 pass
 
     return BookingRead(**snapshot)
+
+
+@router.post("/{booking_id}/tire-storage-offer/decline", response_model=BookingRead)
+async def decline_tire_storage_offer(
+    booking_id: int, session: AsyncSession = Depends(get_session)
+) -> BookingRead:
+    """UI_description.md п.47 (2026-09-16): клиент ответил "нет" на вопрос
+    "сдать шины на хранение?" во время визита на "Сезонная замена шин" —
+    просто прячет вопрос за этот визит, ничего больше не делает (сдача —
+    отдельный вызов POST /tire-sets, см. app/api/tire_sets.py)."""
+    booking = (
+        await session.execute(
+            select(Booking)
+            .options(selectinload(Booking.services))
+            .where(Booking.id == booking_id)
+        )
+    ).scalar_one_or_none()
+    if booking is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if booking.status != BookingStatus.ON_POST:
+        raise HTTPException(status_code=409, detail="Машина сейчас не на посту")
+    if not any(s.name == "Сезонная замена шин" for s in booking.services):
+        raise HTTPException(
+            status_code=409, detail="Этот вопрос не относится к данной заявке"
+        )
+    booking.tire_offer_declined = True
+    await session.commit()
+    await session.refresh(booking)
+    return BookingRead.model_validate(booking)

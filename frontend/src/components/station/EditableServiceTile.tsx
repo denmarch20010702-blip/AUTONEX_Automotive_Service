@@ -67,7 +67,17 @@ export function EditableServiceTile({
       <div className="form-card" style={{ maxWidth: 280 }}>
         <div className="form-field">
           <label>Название</label>
-          <input maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            maxLength={60}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={service.protected}
+            title={
+              service.protected
+                ? "Название этой услуги нельзя менять — она является проводником к хранению шин"
+                : undefined
+            }
+          />
         </div>
         <div className="form-field">
           <label>Длительность</label>
@@ -126,25 +136,27 @@ export function EditableServiceTile({
       >
         <PencilIcon />
       </button>
-      <button
-        type="button"
-        onClick={remove}
-        title="Удалить услугу"
-        style={{
-          position: "absolute",
-          top: 6,
-          right: 6,
-          border: "none",
-          background: "none",
-          color: "var(--color-danger)",
-          fontWeight: 700,
-          cursor: "pointer",
-          fontSize: "1rem",
-          lineHeight: 1,
-        }}
-      >
-        ×
-      </button>
+      {!service.protected && (
+        <button
+          type="button"
+          onClick={remove}
+          title="Удалить услугу"
+          style={{
+            position: "absolute",
+            top: 6,
+            right: 6,
+            border: "none",
+            background: "none",
+            color: "var(--color-danger)",
+            fontWeight: 700,
+            cursor: "pointer",
+            fontSize: "1rem",
+            lineHeight: 1,
+          }}
+        >
+          ×
+        </button>
+      )}
       <Icon />
       <span>{service.name}</span>
       <span className="price">

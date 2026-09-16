@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   getStationStats,
-  issueTireSet,
   listAllCars,
   listAllClients,
   listArchive,
@@ -169,17 +168,6 @@ export function StationPage() {
   // столбиками и контакты клиента, и изначально забронированная услуга.
   const clientOf = (clientId: number): ClientInfo | undefined =>
     clients.find((x) => x.id === clientId);
-
-  const handleIssueTireSet = async (id: number) => {
-    if (!window.confirm("Выдать этот комплект шин клиенту?")) return;
-    try {
-      await issueTireSet(id);
-      reloadTireSets();
-      reloadTireArchive();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
 
   return (
     <div>
@@ -398,7 +386,6 @@ export function StationPage() {
                   <th>Клиент</th>
                   <th>Автомобиль</th>
                   <th>Сдано</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -407,17 +394,16 @@ export function StationPage() {
                     <td>{clientLabel(t.client_id)}</td>
                     <td>{carLabel(t.car_id)}</td>
                     <td>{new Date(t.stored_at).toLocaleDateString()}</td>
-                    <td>
-                      <button type="button" className="action-button" onClick={() => handleIssueTireSet(t.id)}>
-                        Выдать
-                      </button>
-                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        {/* UI_description.md п.47 (2026-09-16): выдача теперь возможна
+            только во время реального визита на "Получить/сдать шины" —
+            станция больше не выдаёт шины напрямую кликом из этой таблицы,
+            клиент сам запускает выдачу из личного кабинета во время визита. */}
         <div className="panel-header" style={{ marginTop: "1rem" }}>
           <h3 style={{ margin: 0 }}>Журнал приёма и выдачи шин</h3>
           <button type="button" className="ghost-button" onClick={() => setShowTireArchive((v) => !v)}>

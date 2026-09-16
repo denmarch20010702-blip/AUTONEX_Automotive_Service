@@ -15,6 +15,7 @@ from app.models import (
     Booking,
     BookingStatus,
     Client,
+    ProposedBy,
     Service,
 )
 from app.schemas.additional_work import (
@@ -25,7 +26,7 @@ from app.schemas.additional_work import (
 )
 from app.schemas.booking import BookingCreate, BookingRead
 from app.services.events import publish
-from app.services.outbox_email import send_stub_email
+from app.services.outbox_email import notify_pending_additional_works
 from app.services.robot_timer import resolve_next_step
 from app.services.slots import get_bookings_overlapping, post_is_free
 
@@ -67,7 +68,10 @@ async def propose_additional_work(
         # было предложить отдельный визит именно на эту услугу — см.
         # schedule_additional_work_separately.
         service_id=service.id,
-        proposed_by=data.proposed_by,
+        # C5 (2026-09-16): этот публичный эндпоинт — только для мастера;
+        # `proposed_by=ai` возможно только через внутренний вызов
+        # run_ai_diagnostic, не через API (см. AdditionalWorkCreate).
+        proposed_by=ProposedBy.MECHANIC,
     )
     session.add(work)
 
@@ -77,11 +81,12 @@ async def propose_additional_work(
     # ниже) — но статус заявки этим переходом сознательно не трогаем: если
     # что-то ещё согласовано и делается, работа над этим продолжается
     # параллельно (тоже прямая пометка пользователя).
-    await send_stub_email(
-        session,
-        to=client.email if client else "unknown",
-        subject=f"Заявка №{booking_id}: предложена дополнительная работа",
-        body=f"{service.name} — {service.price} ₽. Подтвердите или отклоните в личном кабинете.",
+    #
+    # C5: одно письмо на ВЕСЬ текущий список неотвеченных предложений по
+    # заявке (не только это) — тот же путь, что и для предложений от ИИ
+    # (см. ai_diagnostics.py), клиенту не важно, кто предложил.
+    await notify_pending_additional_works(
+        session, booking_id, client.email if client else "unknown"
     )
 
     await session.commit()

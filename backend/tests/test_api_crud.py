@@ -403,6 +403,12 @@ async def test_delete_client_cascades_bookings_and_cars(client: AsyncClient) -> 
 async def test_cannot_delete_client_with_tires_in_storage(client: AsyncClient) -> None:
     # UI_description.md п.32/41: в отличие от машин/заявок выше, шины на
     # хранении — блокирующее условие: клиент должен сначала их забрать.
+    # п.47 (2026-09-16): сдать шины можно только во время визита на
+    # "Получить/сдать шины" — заводим такую заявку и переводим на пост.
+    from datetime import date, datetime, timedelta, timezone
+
+    from helpers import make_startable_now
+
     client_resp = await client.post(
         "/clients", json={"email": unique_email(), "name": "Шины на хранении"}
     )
@@ -411,6 +417,32 @@ async def test_cannot_delete_client_with_tires_in_storage(client: AsyncClient) -
         "/cars", json={"client_id": client_id, "make": "Kia", "model": "Sportage"}
     )
     car_id = car_resp.json()["id"]
+
+    services = (await client.get("/catalog")).json()
+    service_id = next(s["id"] for s in services if s["name"] == "Получить/сдать шины")
+    day = date.today() + timedelta(days=520)
+    slot = (
+        await client.get(
+            "/bookings/available-slots",
+            params={
+                "service_ids": [service_id],
+                "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat(),
+            },
+        )
+    ).json()[0]
+    booking_resp = await client.post(
+        "/bookings",
+        json={
+            "client_id": client_id,
+            "car_id": car_id,
+            "start_at": slot["start_at"],
+            "service_ids": [service_id],
+        },
+    )
+    booking_id = booking_resp.json()["id"]
+    await make_startable_now(booking_id)
+    await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+
     tire_set_resp = await client.post(
         "/tire-sets", json={"client_id": client_id, "car_id": car_id}
     )
@@ -420,7 +452,8 @@ async def test_cannot_delete_client_with_tires_in_storage(client: AsyncClient) -
     assert resp.status_code == 409
     assert "шин" in resp.json()["detail"]
 
-    # После выдачи шин — удаление профиля проходит нормально.
+    # После выдачи шин — удаление профиля проходит нормально. Выдача тоже
+    # требует визита — машина всё ещё на посту с прошлого шага, этого хватает.
     await client.post(f"/tire-sets/{tire_set_id}/issue")
     resp = await client.delete(f"/clients/{client_id}")
     assert resp.status_code == 204
@@ -582,3 +615,27 @@ async def test_service_duplicate_name_conflict(client: AsyncClient) -> None:
     assert resp2.status_code == 409
 
     await client.delete(f"/catalog/{resp1.json()['id']}")
+
+
+@pytest.mark.asyncio
+async def test_protected_tire_services_cannot_be_renamed_or_deleted(client: AsyncClient) -> None:
+    # UI_description.md п.47 (2026-09-16): "Сезонная замена шин" и
+    # "Получить/сдать шины" — проводники к обязательному функционалу B1
+    # (см. app/api/tire_sets.py, где к ним обращаются по точному имени) —
+    # их нельзя переименовать или удалить, но цену/длительность менять можно
+    # как у любой другой услуги.
+    services = (await client.get("/catalog")).json()
+    for name in ("Сезонная замена шин", "Получить/сдать шины"):
+        service = next(s for s in services if s["name"] == name)
+        assert service["protected"] is True
+
+        resp = await client.patch(f"/catalog/{service['id']}", json={"name": "Другое название"})
+        assert resp.status_code == 409
+
+        resp = await client.patch(f"/catalog/{service['id']}", json={"price": "999.00"})
+        assert resp.status_code == 200
+        assert resp.json()["price"] == "999.00"
+        await client.patch(f"/catalog/{service['id']}", json={"price": service["price"]})
+
+        resp = await client.delete(f"/catalog/{service['id']}")
+        assert resp.status_code == 409

@@ -66,8 +66,33 @@ export function AdditionalWorkPanel({
   return (
     <div style={{ fontSize: "0.85rem" }}>
       {error && <div className="error-banner">{error}</div>}
+      {/* Найдено пользователем (2026-09-16): при нескольких доп. работах
+          список растягивался в длинный столбик — каждая ИИ-строка занимала
+          две строки текста (причина под ней) плюс повторяла марку/модель/
+          пробег машины в самой причине (убрано в ai_diagnostics.py). Теперь
+          одна компактная строка на работу; причина ИИ доступна по наведению
+          на бейдж (title), а не отдельной строкой под каждой работой. */}
       {works.map((w) => (
-        <div key={w.id}>
+        <div key={w.id} style={{ lineHeight: 1.5 }}>
+          {/* C5 (2026-09-16): пометка "от ИИ" + причина/уверенность — только
+              здесь, на станции (оверсайт мастера, пока он в контуре), НЕ в
+              кабинете клиента (см. ClientAdditionalWorks.tsx — там этого нет
+              намеренно, клиенту не важно и не нужно знать источник). */}
+          {w.proposed_by === "ai" && (
+            <span
+              title={w.ai_reason ?? undefined}
+              style={{
+                display: "inline-block",
+                marginRight: "0.35rem",
+                padding: "0.05rem 0.4rem",
+                borderRadius: 999,
+                background: "var(--color-primary)",
+                fontSize: "0.72rem",
+              }}
+            >
+              🤖 ИИ{w.ai_confidence !== null ? ` ${Math.round(w.ai_confidence * 100)}%` : ""}
+            </span>
+          )}
           {w.description} ({w.price} ₽, {formatDuration(w.duration_minutes)}) —{" "}
           <span
             style={{

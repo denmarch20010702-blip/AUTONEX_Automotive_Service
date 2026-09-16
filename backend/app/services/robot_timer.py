@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import async_session
-from app.models import AdditionalWork, AdditionalWorkStatus, Booking, BookingStatus
+from app.models import AdditionalWork, AdditionalWorkStatus, Booking, BookingStatus, Client
 from app.schemas.booking import BookingRead
 from app.services.events import publish
+from app.services.outbox_email import send_stub_email
 
 # Заметка пользователя (2026-09-13): после приёма машины на пост
 # обслуживание должно самостоятельно идти по таймеру — длительность равна
@@ -35,6 +36,24 @@ def schedule_auto_advance(booking_id: int, duration: timedelta) -> None:
     )
 
 
+async def notify_car_ready(session: AsyncSession, booking: Booking) -> None:
+    """C5 (2026-09-16, прямая просьба пользователя): письмо о готовности
+    машины — раньше клиент узнавал об этом только сам, зайдя в кабинет,
+    хотя ровно такое же по духу уведомление уже есть и для "нужно решение"
+    (B2/C4), и для автоотмены. Вызывается из всех мест, где заявка реально
+    ВПЕРВЫЕ становится `ready` (см. вызовы ниже и в app/api/bookings.py —
+    там же для ручного переопределения кнопкой "Готово" на станции)."""
+    client = await session.get(Client, booking.client_id)
+    if client is None:
+        return
+    await send_stub_email(
+        session,
+        to=client.email,
+        subject=f"Заявка №{booking.id}: машина готова",
+        body="Работы завершены — можно приезжать забрать машину.",
+    )
+
+
 async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
     """Решает, что делать с заявкой в момент, когда она "освобождается" с
     поста — будь то конец основной услуги ИЛИ конец только что отработанной
@@ -53,6 +72,11 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
 
     Не коммитит сама — вызывающий код решает, когда это делать (может быть
     частью более крупной транзакции)."""
+    # C5: письмо о готовности — только когда статус РЕАЛЬНО становится
+    # `ready` впервые, а не при каждом вызове этой функции (respond_
+    # additional_work может вызвать её и когда заявка уже была `ready` —
+    # см. вызов там, — без этой проверки письмо продублировалось бы).
+    was_ready = booking.status == BookingStatus.READY
     has_pending = (
         await session.execute(
             select(AdditionalWork.id)
@@ -116,6 +140,8 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
 
     # Ничего не ждём и нечего отрабатывать — всё сделано.
     booking.status = BookingStatus.READY
+    if not was_ready:
+        await notify_car_ready(session, booking)
 
 
 async def _auto_advance(booking_id: int) -> None:

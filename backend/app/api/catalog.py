@@ -48,6 +48,15 @@ async def update_service(
     service = await session.get(Service, service_id)
     if service is None:
         raise HTTPException(status_code=404, detail="Услуга не найдена")
+    # UI_description.md п.47 (2026-09-16): "Сезонная замена шин"/"Получить/
+    # сдать шины" — проводники к обязательному функционалу (B1), их название
+    # нельзя менять (иначе сломается сопоставление по имени в
+    # app/api/tire_sets.py). Время/цену менять можно как обычно.
+    if service.protected and data.name is not None and data.name != service.name:
+        raise HTTPException(
+            status_code=409,
+            detail="Название этой услуги нельзя менять — она является проводником к хранению шин",
+        )
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(service, field, value)
     try:
@@ -64,5 +73,11 @@ async def delete_service(service_id: int, session: AsyncSession = Depends(get_se
     service = await session.get(Service, service_id)
     if service is None:
         raise HTTPException(status_code=404, detail="Услуга не найдена")
+    # UI_description.md п.47: см. update_service выше — то же самое для удаления.
+    if service.protected:
+        raise HTTPException(
+            status_code=409,
+            detail="Эту услугу нельзя удалить — она является проводником к хранению шин",
+        )
     await session.delete(service)
     await session.commit()
