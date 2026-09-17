@@ -198,6 +198,53 @@ async def test_car_ready_notification_sent_once_via_auto_timer(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_stalled_on_post_booking_resumed_when_scheduler_job_is_lost(client: AsyncClient) -> None:
+    # Найдено на практике (2026-09-17, аудит проекта): `AsyncIOScheduler`
+    # хранит запланированные job'ы `_auto_advance` только в памяти процесса —
+    # перезапуск backend'а, пока заявка `on_post`, теряет job безвозвратно, и
+    # заявка зависает без движения. Симулируем именно потерю job'а (не
+    # реальный перезапуск процесса): принимаем на пост, но НЕ вызываем
+    # `_auto_advance` — вместо этого напрямую сдвигаем `service_ends_at` в
+    # прошлое (как если бы таймер должен был сработать, но не сработал) и
+    # проверяем, что sweep сам находит и доводит такую заявку.
+    from helpers import make_startable_now
+
+    from app.services.robot_timer import resume_stalled_on_post_bookings
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 407)
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        async with async_session() as session:
+            booking = await session.get(Booking, booking_id)
+            booking.service_ends_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            await session.commit()
+
+        # Отдельная сессия — иначе `booking` из строк выше остаётся в
+        # identity map этой же сессии БЕЗ загруженной связи `services`
+        # (`session.get()` её не подгружал), и `selectinload` в запросе
+        # `resume_stalled_on_post_bookings` не подгружает её заново на уже
+        # присутствующий в сессии объект — `BookingRead.model_validate()`
+        # внутри ловит настоящий `MissingGreenlet` на лениво недогруженной
+        # связи. Новая сессия гарантирует честный свежий eager-load.
+        async with async_session() as session:
+            resumed = await resume_stalled_on_post_bookings(session)
+            assert resumed == 1
+
+        assert (await client.get(f"/bookings/{booking_id}")).json()["status"] == "ready"
+
+        # Заявка уже не в "потерянном" состоянии — повторный проход sweep'а
+        # не должен её снова "разрешать" (она больше не on_post).
+        async with async_session() as session:
+            resumed_again = await resume_stalled_on_post_bookings(session)
+        assert resumed_again == 0
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
 async def test_car_ready_notification_sent_once_via_manual_button(client: AsyncClient) -> None:
     # Ручная кнопка "Готово" на станции идёт другим путём (прямо через
     # update_booking_status, минуя resolve_next_step) — должна давать тот

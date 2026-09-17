@@ -659,3 +659,26 @@ body {
   font-size: 0.75rem;
   color: #c9c9cf;
 }
+
+/* Найдено пользователем на практике (2026-09-16): запись, уже принятая на
+   пост, который занят другой машиной прямо сейчас, была совсем не видна —
+   пост выглядел просто "занят" (красный), без намёка на очередь. Отдельная
+   жёлтая пометка "далее" рядом с основным статусом поста, тот же цвет, что
+   у post-slot--reserved. */
+.post-slot__next {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  text-align: center;
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed rgba(245, 166, 35, 0.5);
+  color: #f5a623;
+}
+
+.post-slot__next-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}

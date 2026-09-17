@@ -117,6 +117,8 @@ async def test_propose_and_approve_additional_work(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 300)
     extra_id = await make_extra_service(client, price="1500.00", duration_minutes=20)
     try:
+        await make_startable_now(booking_id)
+        await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         resp = await propose(client, booking_id, extra_id)
         assert resp.status_code == 201
         work = resp.json()
@@ -145,6 +147,8 @@ async def test_decline_additional_work(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 301)
     extra_id = await make_extra_service(client)
     try:
+        await make_startable_now(booking_id)
+        await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         resp = await propose(client, booking_id, extra_id)
         work_id = resp.json()["id"]
 
@@ -163,6 +167,8 @@ async def test_cannot_respond_twice(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 302)
     extra_id = await make_extra_service(client)
     try:
+        await make_startable_now(booking_id)
+        await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         resp = await propose(client, booking_id, extra_id)
         work_id = resp.json()["id"]
 
@@ -594,6 +600,106 @@ async def test_approve_while_still_on_post_with_queued_next_booking_offers_separ
             await client.delete(f"/clients/{other_client_id}")
 
 
+@pytest.mark.asyncio
+async def test_schedule_batch_combines_multiple_works_into_one_visit(client: AsyncClient) -> None:
+    # Найдено пользователем на практике (2026-09-17): когда на посту уже
+    # очередь (следующая заявка блокирует продление), НЕСКОЛЬКИМ доп.
+    # работам по одной заявке одновременно может не хватить места — раньше
+    # это означало отдельный визит (и отдельный выбор времени в мини-
+    # календаре) на КАЖДУЮ из них. Проверяем, что теперь клиент может
+    # выбрать время ОДИН раз и записать обе сразу в ОДНУ новую заявку.
+    from app.db.session import async_session
+    from app.models import Booking, BookingStatus
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 351)
+    extra_a = await make_extra_service(client, price="300.00", duration_minutes=20)
+    extra_b = await make_extra_service(client, price="450.00", duration_minutes=15)
+    other_client_id = other_car_id = blocking_id = scheduled_id = None
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        booking_now = resp.json()
+        post_id = booking_now["post_id"]
+        actual_end_at = datetime.fromisoformat(booking_now["end_at"].replace("Z", "+00:00"))
+
+        other_client_resp = await client.post(
+            "/clients", json={"email": unique_email(), "name": "AW Batch Blocker"}
+        )
+        other_client_id = other_client_resp.json()["id"]
+        other_car_resp = await client.post(
+            "/cars", json={"client_id": other_client_id, "make": "Kia", "model": "Rio"}
+        )
+        other_car_id = other_car_resp.json()["id"]
+
+        # Та же самая очередь, что и в тесте выше — блокирует продление
+        # occupancy для ЛЮБОЙ одобренной доп. работы на этом посту.
+        async with async_session() as session:
+            blocking = Booking(
+                client_id=other_client_id,
+                car_id=other_car_id,
+                post_id=post_id,
+                start_at=actual_end_at,
+                end_at=actual_end_at + timedelta(minutes=30),
+                status=BookingStatus.ACCEPTED,
+            )
+            session.add(blocking)
+            await session.commit()
+            await session.refresh(blocking)
+            blocking_id = blocking.id
+
+        work_a = (await propose(client, booking_id, extra_a)).json()
+        resp = await client.post(f"/additional-works/{work_a['id']}/respond", json={"status": "approved"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["needs_separate_visit"] is True
+
+        work_b = (await propose(client, booking_id, extra_b)).json()
+        resp = await client.post(f"/additional-works/{work_b['id']}/respond", json={"status": "approved"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["needs_separate_visit"] is True
+
+        # Один общий визит на ОБЕ работы сразу — не два отдельных.
+        day = date.today() + timedelta(days=500)
+        slot = (
+            await client.get(
+                "/bookings/available-slots",
+                params={
+                    "service_ids": [extra_a, extra_b],
+                    "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat(),
+                },
+            )
+        ).json()[0]
+        resp = await client.post(
+            "/additional-works/schedule-batch",
+            json={"work_ids": [work_a["id"], work_b["id"]], "start_at": slot["start_at"]},
+        )
+        assert resp.status_code == 200
+        scheduled = resp.json()
+        assert len(scheduled) == 2
+        scheduled_booking_ids = {w["scheduled_booking_id"] for w in scheduled}
+        assert len(scheduled_booking_ids) == 1  # обе работы указывают на ОДНУ и ту же новую заявку
+        assert all(w["status"] == "approved" for w in scheduled)
+        scheduled_id = scheduled_booking_ids.pop()
+
+        new_booking = (await client.get(f"/bookings/{scheduled_id}")).json()
+        new_service_ids = {s["id"] for s in new_booking["services"]}
+        assert new_service_ids == {extra_a, extra_b}
+    finally:
+        await cleanup(
+            client,
+            booking_id=booking_id,
+            car_id=car_id,
+            client_id=client_id,
+            service_id=service_id,
+            extra_service_ids=[extra_a, extra_b],
+            extra_booking_ids=[b for b in (blocking_id, scheduled_id) if b],
+        )
+        if other_car_id:
+            await client.delete(f"/cars/{other_car_id}")
+        if other_client_id:
+            await client.delete(f"/clients/{other_client_id}")
+
+
 async def refund_revenue(booking_id: int, amount) -> None:
     # Тот же честный приём, что уже применён в test_api_bookings.py
     # (2026-09-15): вычитаем только если в архиве реально есть ISSUED-запись
@@ -765,6 +871,8 @@ async def test_pending_count_drops_after_response(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 308)
     extra_id = await make_extra_service(client)
     try:
+        await make_startable_now(booking_id)
+        await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         count = (await client.get(f"/clients/{client_id}/additional-works/pending-count")).json()
         assert count["count"] == 0
 
@@ -795,6 +903,8 @@ async def test_propose_for_nonexistent_booking_returns_404(client: AsyncClient) 
 async def test_propose_with_nonexistent_service_returns_404(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 307)
     try:
+        await make_startable_now(booking_id)
+        await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         resp = await propose(client, booking_id, 999999999)
         assert resp.status_code == 404
     finally:
@@ -817,6 +927,8 @@ async def test_cancelling_booking_with_additional_work_does_not_crash(client: As
     client_id, car_id, service_id, booking_id = await make_booking(client, 303)
     extra_id = await make_extra_service(client, price="700.00")
     try:
+        await make_startable_now(booking_id)
+        await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         resp = await propose(client, booking_id, extra_id)
         assert resp.status_code == 201
         work_id = resp.json()["id"]

@@ -16,7 +16,7 @@ from app.api import (
 )
 from app.services.overdue_bookings import schedule_overdue_sweep
 from app.services.reminders import schedule_reminder_sweep
-from app.services.robot_timer import scheduler
+from app.services.robot_timer import schedule_stalled_on_post_sweep, scheduler
 from app.services.tire_season_reminders import schedule_tire_season_sweep
 
 
@@ -25,6 +25,11 @@ async def lifespan(app: FastAPI):
     schedule_reminder_sweep(scheduler)
     schedule_overdue_sweep(scheduler)
     schedule_tire_season_sweep(scheduler)
+    # Найдено на практике (2026-09-17, аудит проекта): job конкретного заезда
+    # (`schedule_auto_advance`) живёт только в памяти — перезапуск backend'а
+    # во время `on_post` теряет его безвозвратно. Этот sweep "дособирает"
+    # такие заявки (см. robot_timer.py) — тот же приём, что и overdue_bookings.
+    schedule_stalled_on_post_sweep(scheduler)
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)

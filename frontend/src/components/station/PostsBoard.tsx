@@ -26,23 +26,29 @@ type PostState = "free" | "reserved" | "busy";
 function statusOf(
   bookings: Booking[],
   postId: number,
-): { state: PostState; hint: string; booking?: Booking } {
+): { state: PostState; hint: string; booking?: Booking; next?: Booking } {
   const onThisPost = bookings.filter((b) => b.post_id === postId);
-
-  const active = onThisPost.find((b) => b.status === "on_post");
-  if (active) {
-    return { state: "busy", hint: "Машина в работе", booking: active };
-  }
 
   const upcoming = onThisPost
     .filter((b) => b.status === "accepted")
     .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime())[0];
+  const upcomingSoon =
+    upcoming && new Date(upcoming.start_at).getTime() - Date.now() <= NEAR_FUTURE_MS
+      ? upcoming
+      : undefined;
 
-  if (upcoming) {
-    const msUntil = new Date(upcoming.start_at).getTime() - Date.now();
-    if (msUntil <= NEAR_FUTURE_MS) {
-      return { state: "reserved", hint: "Скоро приедет машина", booking: upcoming };
-    }
+  const active = onThisPost.find((b) => b.status === "on_post");
+  if (active) {
+    // Найдено пользователем на практике (2026-09-16): если следующая
+    // запись уже принята на ТОТ ЖЕ пост, где прямо сейчас работает другая
+    // машина, очередь была совсем не видна — пост просто выглядел "занят",
+    // без намёка, что кто-то уже ждёт следом. Красный (занятость) остаётся
+    // главным состоянием, но теперь показываем и "следующего в очереди".
+    return { state: "busy", hint: "Машина в работе", booking: active, next: upcomingSoon };
+  }
+
+  if (upcomingSoon) {
+    return { state: "reserved", hint: "Скоро приедет машина", booking: upcomingSoon };
   }
 
   return { state: "free", hint: "Свободен" };
@@ -68,9 +74,11 @@ export function PostsBoard({
   return (
     <div className="posts-board">
       {POSTS.map((post) => {
-        const { state, hint, booking } = statusOf(bookings, post.id);
+        const { state, hint, booking, next } = statusOf(bookings, post.id);
         const client = booking ? clientOf(booking.client_id) : undefined;
         const car = booking ? carOf(booking.car_id) : undefined;
+        const nextClient = next ? clientOf(next.client_id) : undefined;
+        const nextCar = next ? carOf(next.car_id) : undefined;
         return (
           <div key={post.id} className={`post-slot post-slot--${state}`} title={hint}>
             <span className="post-slot__label">{post.label}</span>
@@ -89,6 +97,23 @@ export function PostsBoard({
               <Countdown targetIso={booking.service_ends_at} startedIso={booking.on_post_started_at} />
             )}
             {state === "reserved" && booking && <UpcomingCountdown targetIso={booking.start_at} />}
+            {/* Найдено пользователем на практике (2026-09-16): запись,
+                уже принятая на этот же пост следующей, была совсем не
+                видна, пока пост занят другой машиной — добавили отдельную
+                жёлтую пометку "далее" рядом с основным (красным) статусом,
+                не заменяя его. */}
+            {next && (
+              <span className="post-slot__next" title="Следующая запись на этот пост">
+                <span className="post-slot__next-label">Далее:</span>{" "}
+                {nextClient && <span className="post-slot__owner">{nextClient.name}</span>}
+                {nextCar && (
+                  <span className="post-slot__car">
+                    {nextCar.make} {nextCar.model}
+                  </span>
+                )}
+                <UpcomingCountdown targetIso={next.start_at} />
+              </span>
+            )}
           </div>
         );
       })}

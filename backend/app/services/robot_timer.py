@@ -144,6 +144,30 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
         await notify_car_ready(session, booking)
 
 
+async def _resolve_and_commit(session: AsyncSession, booking: Booking) -> bool:
+    """Общее тело шага "довести заявку до следующего состояния" — и для
+    штатного тика автотаймера (`_auto_advance`), и для sweep'а, который
+    подхватывает заявки, чей таймер потерялся (см. `resume_stalled_on_post_
+    bookings` ниже). Возвращает True, если реально что-то изменил."""
+    await resolve_next_step(session, booking)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Крайне редкий случай (п.35): продлённый интервал пересёкся с
+        # чужой заявкой. Работает в фоне без запроса, кому вернуть 409 —
+        # просто откатываем, заявка останется в 'on_post' без нового
+        # таймера; следующий проход sweep'а (см. ниже) или станция вручную
+        # разберутся с ней.
+        await session.rollback()
+        return False
+    await session.refresh(booking)
+    publish(
+        "booking_status_changed",
+        BookingRead.model_validate(booking).model_dump(mode="json"),
+    )
+    return True
+
+
 async def _auto_advance(booking_id: int) -> None:
     async with async_session() as session:
         booking = (
@@ -159,19 +183,62 @@ async def _auto_advance(booking_id: int) -> None:
         # переход. Тот же принцип защиты, что и у ручных переходов (A5).
         if booking is None or booking.status != BookingStatus.ON_POST:
             return
+        await _resolve_and_commit(session, booking)
 
-        await resolve_next_step(session, booking)
-        try:
-            await session.commit()
-        except IntegrityError:
-            # Крайне редкий случай (п.35): продлённый интервал пересёкся с
-            # чужой заявкой. Автотаймер работает в фоне без запроса, кому
-            # вернуть 409 — просто откатываем, заявка останется в 'on_post'
-            # без нового таймера; станция увидит это и разберётся вручную.
-            await session.rollback()
-            return
-        await session.refresh(booking)
-        publish(
-            "booking_status_changed",
-            BookingRead.model_validate(booking).model_dump(mode="json"),
+
+# Найдено пользователем на практике (2026-09-17, аудит проекта): `scheduler`
+# выше — `AsyncIOScheduler` без персистентного jobstore, поэтому запланированный
+# job конкретного `_auto_advance` живёт только в памяти процесса. Если backend
+# перезапустится (деплой, `--reload`, падение), пока заявка `on_post` — этот
+# job безвозвратно теряется, и заявка зависает в `on_post` навсегда, пока
+# станция не тронет её вручную. Задание 12 не требует переживать перезапуск
+# сервера (в отличие от некоторых других заданий из PDF), но раз с этим же
+# столкнулись на практике — чинится не персистентным jobstore (лишняя
+# сложность/зависимость), а тем же приёмом, что уже есть в проекте для другого
+# класса "зависших" заявок (`overdue_bookings.py`): периодический sweep,
+# который сам находит заявки, чей таймер должен был сработать, но не сработал,
+# и доводит их до следующего шага. Безопасно при дублировании с обычным
+# автотаймером — `_resolve_and_commit` трогает только реально `on_post`
+# заявки под `FOR UPDATE`, вторая попытка увидит уже изменённый статус и
+# ничего не сделает (тот же принцип защиты, что и у `_auto_advance` выше).
+STALLED_ON_POST_SWEEP_INTERVAL_SECONDS = 30
+
+
+async def resume_stalled_on_post_bookings(session: AsyncSession) -> int:
+    now = datetime.now(timezone.utc)
+    stalled = (
+        await session.execute(
+            select(Booking)
+            .options(selectinload(Booking.services))
+            .where(
+                Booking.status == BookingStatus.ON_POST,
+                Booking.service_ends_at.is_not(None),
+                Booking.service_ends_at <= now,
+            )
+            .with_for_update()
         )
+    ).scalars().all()
+    resumed = 0
+    for booking in stalled:
+        if await _resolve_and_commit(session, booking):
+            resumed += 1
+    return resumed
+
+
+async def _stalled_on_post_sweep() -> None:
+    async with async_session() as session:
+        await resume_stalled_on_post_bookings(session)
+
+
+def schedule_stalled_on_post_sweep(scheduler: AsyncIOScheduler) -> None:
+    # `next_run_time=now()` — так же, как у B3 (напоминания): нужно поймать
+    # заявку, зависшую именно из-за перезапуска, сразу при старте процесса,
+    # а не только после первого штатного интервала.
+    scheduler.add_job(
+        _stalled_on_post_sweep,
+        "interval",
+        seconds=STALLED_ON_POST_SWEEP_INTERVAL_SECONDS,
+        id="stalled-on-post-sweep",
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc),
+    )

@@ -431,11 +431,15 @@ export function respondAdditionalWork(id: number, status: "approved" | "declined
 }
 
 // UI_description.md п.37: клиент выбрал слот из мини-календаря для
-// отдельного визита именно на эту доп. работу — вызывается после того, как
-// respondAdditionalWork() вернул ApiError с detail.needs_separate_visit.
-export function scheduleAdditionalWork(id: number, startAt: string): Promise<AdditionalWork> {
-  return request<AdditionalWork>(`/additional-works/${id}/schedule`, {
+// отдельного визита на доп. работы, которым сразу не хватило места на
+// посту — вызывается после того, как respondAdditionalWork() вернул
+// ApiError с detail.needs_separate_visit. Найдено пользователем на
+// практике (2026-09-17): при очереди на посту это могло случиться сразу с
+// несколькими доп. работами по одной заявке — теперь один визит покрывает
+// их все разом, а не по отдельному визиту на каждую.
+export function scheduleAdditionalWorks(workIds: number[], startAt: string): Promise<AdditionalWork[]> {
+  return request<AdditionalWork[]>("/additional-works/schedule-batch", {
     method: "POST",
-    body: JSON.stringify({ start_at: startAt }),
+    body: JSON.stringify({ work_ids: workIds, start_at: startAt }),
   });
 }

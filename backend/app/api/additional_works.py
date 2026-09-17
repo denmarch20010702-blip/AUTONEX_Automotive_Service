@@ -23,6 +23,7 @@ from app.schemas.additional_work import (
     AdditionalWorkRead,
     AdditionalWorkRespond,
     AdditionalWorkSchedule,
+    AdditionalWorkScheduleBatch,
 )
 from app.schemas.booking import BookingCreate, BookingRead
 from app.services.events import publish
@@ -48,6 +49,21 @@ async def propose_additional_work(
     booking = await session.get(Booking, booking_id)
     if booking is None:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    # Найденный на практике реальный баг (2026-09-17, аудит проекта):
+    # мастер мог предложить доп. работу на заявку, которая ещё даже не
+    # принята на пост (`accepted` — машина физически не приехала). Это не
+    # просто нелогично ("нашёл что-то ещё" подразумевает, что машина уже
+    # обслуживается) — это создавало тупик: неотвеченное предложение сразу
+    # блокировало сам переход `accepted -> on_post` (см. guard в
+    # update_booking_status), заявка зависала в "принята" до ответа клиента
+    # по машине, которую он даже не привёз.
+    if booking.status == BookingStatus.ACCEPTED:
+        raise HTTPException(
+            status_code=409,
+            detail="Машина ещё не принята на пост — сначала примите заявку",
+        )
+
     client = await session.get(Client, booking.client_id)
 
     # UI_description.md п.19: доп. работа выбирается кликом из каталога
@@ -365,3 +381,81 @@ async def schedule_additional_work(
     await session.refresh(work)
     publish("additional_work_responded", AdditionalWorkRead.model_validate(work).model_dump(mode="json"))
     return work
+
+
+@router.post("/additional-works/schedule-batch", response_model=list[AdditionalWorkRead])
+async def schedule_additional_works_batch(
+    data: AdditionalWorkScheduleBatch, session: AsyncSession = Depends(get_session)
+) -> list[AdditionalWork]:
+    """Найдено пользователем на практике (2026-09-17): когда на посту уже
+    очередь, НЕСКОЛЬКИМ доп. работам по одной заявке одновременно может не
+    хватить места — раньше клиенту приходилось выбирать время отдельно для
+    КАЖДОЙ (см. schedule_additional_work выше). Здесь — тот же принцип, но
+    сразу для группы работ: одна новая заявка со всеми их услугами разом,
+    один выбор времени."""
+    if not data.work_ids:
+        raise HTTPException(status_code=422, detail="Список работ пуст")
+
+    works = (
+        await session.execute(
+            select(AdditionalWork).where(AdditionalWork.id.in_(data.work_ids)).with_for_update()
+        )
+    ).scalars().all()
+    if len(works) != len(set(data.work_ids)):
+        raise HTTPException(status_code=404, detail="Одно или несколько предложений не найдены")
+    if len({w.booking_id for w in works}) != 1:
+        raise HTTPException(status_code=409, detail="Все работы в одном визите должны относиться к одной заявке")
+    for w in works:
+        if w.status != AdditionalWorkStatus.PENDING:
+            raise HTTPException(
+                status_code=409, detail=f"На предложение №{w.id} уже есть ответ: '{w.status.value}'"
+            )
+        if w.service_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Услуга для предложения №{w.id} больше не существует в каталоге — отдельный визит невозможен",
+            )
+
+    booking = await session.get(Booking, works[0].booking_id)
+    if booking is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    # Переиспользуем сам эндпоинт создания заявки — та же конкурентно-
+    # безопасная проверка слота/поста/машины (A4), что и у обычной записи;
+    # длительность нового визита складывается из ВСЕХ переданных услуг сразу.
+    new_booking = await create_booking(
+        BookingCreate(
+            client_id=booking.client_id,
+            car_id=booking.car_id,
+            start_at=data.start_at,
+            service_ids=[w.service_id for w in works],
+        ),
+        session,
+    )
+
+    # create_booking() выше сам коммитит — блокировка от FOR UPDATE снята
+    # вместе с этим commit'ом раньше, чем мы успели пометить работы
+    # согласованными. Перепроверяем заново под новой блокировкой (тот же
+    # приём, что и в schedule_additional_work) — если кто-то параллельно
+    # успел ответить хоть на одну из них в этом узком окне, не задваиваем
+    # визит для остальных молча.
+    works = (
+        await session.execute(
+            select(AdditionalWork).where(AdditionalWork.id.in_(data.work_ids)).with_for_update()
+        )
+    ).scalars().all()
+    if any(w.status != AdditionalWorkStatus.PENDING for w in works):
+        raise HTTPException(
+            status_code=409,
+            detail="Одно из предложений уже обработано в другом запросе — новый визит создан, но не привязан",
+        )
+
+    for w in works:
+        w.status = AdditionalWorkStatus.APPROVED
+        w.scheduled_booking_id = new_booking.id
+    await session.commit()
+    for w in works:
+        await session.refresh(w)
+    for w in works:
+        publish("additional_work_responded", AdditionalWorkRead.model_validate(w).model_dump(mode="json"))
+    return works

@@ -28,10 +28,12 @@ function statusLabel(w: AdditionalWork): string {
 // настоящий таймер выполнения, см. app/api/additional_works.py).
 export function AdditionalWorkPanel({
   bookingId,
+  bookingStatus,
   services,
   refreshKey,
 }: {
   bookingId: number;
+  bookingStatus: string;
   services: Service[];
   refreshKey: number;
 }) {
@@ -109,10 +111,19 @@ export function AdditionalWorkPanel({
           </span>
         </div>
       ))}
-      {!picking && (
+      {/* Найденный на практике реальный баг (2026-09-17, аудит проекта):
+          кнопка была доступна даже для заявки, которую ещё не приняли на
+          пост ("accepted" — машина физически не приехала) — предложение
+          доп. работы в этот момент тут же блокировало сам приём на пост
+          (см. guard в backend, additional_works.py), и заявка зависала.
+          "Мастер нашёл что-то ещё" подразумевает, что машина уже на посту. */}
+      {!picking && bookingStatus !== "accepted" && (
         <button type="button" className="ghost-button" onClick={() => setPicking(true)}>
           + предложить доп. работу
         </button>
+      )}
+      {!picking && bookingStatus === "accepted" && (
+        <span style={{ color: "var(--color-muted)" }}>Доступно после приёма на пост</span>
       )}
       {picking && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem", marginTop: "0.3rem", minWidth: 180 }}>

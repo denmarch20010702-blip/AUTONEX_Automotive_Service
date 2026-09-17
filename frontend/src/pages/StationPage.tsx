@@ -41,6 +41,19 @@ function formatMoney(value: string | number): string {
   return `${Math.round(Number(value)).toLocaleString("ru-RU")} ₽`;
 }
 
+// "Сегодня" — сутки по UTC (та же осознанная договорённость про часовой
+// пояс, что и у today_revenue на backend'е, station.py) — не по локальному
+// времени станции/клиента.
+function isTodayUtc(startAtIso: string): boolean {
+  const start = new Date(startAtIso);
+  const now = new Date();
+  return (
+    start.getUTCFullYear() === now.getUTCFullYear() &&
+    start.getUTCMonth() === now.getUTCMonth() &&
+    start.getUTCDate() === now.getUTCDate()
+  );
+}
+
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [services, setServices] = useState<Service[] | null>(null);
@@ -56,6 +69,11 @@ export function StationPage() {
   const [tireArchiveTotal, setTireArchiveTotal] = useState(0);
   const [tireArchivePage, setTireArchivePage] = useState(1);
   const [showTireArchive, setShowTireArchive] = useState(false);
+  // Прямая просьба пользователя (2026-09-17): кнопка-переключатель "Все
+  // заявки" ⇄ "заявки на сегодня" — тот же принцип "сегодня", что и везде в
+  // проекте (сутки по UTC, см. today_revenue в station.py), чтобы не вводить
+  // ещё одну трактовку часового пояса.
+  const [showTodayOnly, setShowTodayOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
   const reloadTick = useDebouncedEventTick();
@@ -238,11 +256,26 @@ export function StationPage() {
           с каталогом услуг" — "Все заявки" теперь выше "Каталога услуг". */}
       <div className="panel">
         <div className="panel-header">
-          <h2>Все заявки</h2>
+          <h2>{showTodayOnly ? "Заявки на сегодня" : "Все заявки"}</h2>
+          {bookings && bookings.length > 0 && (
+            <button type="button" className="ghost-button" onClick={() => setShowTodayOnly((v) => !v)}>
+              {showTodayOnly ? "Показать заявки за всё время" : "Показать заявки на сегодня"}
+            </button>
+          )}
         </div>
-        {!error && bookings === null && <p className="panel-empty">Загрузка...</p>}
-        {bookings && bookings.length === 0 && <p className="panel-empty">Заявок пока нет.</p>}
-        {bookings && bookings.length > 0 && (
+        {(() => {
+          const displayedBookings = showTodayOnly
+            ? (bookings ?? []).filter((b) => isTodayUtc(b.start_at))
+            : bookings;
+          return (
+            <>
+              {!error && displayedBookings === null && <p className="panel-empty">Загрузка...</p>}
+              {displayedBookings && displayedBookings.length === 0 && (
+                <p className="panel-empty">
+                  {showTodayOnly ? "На сегодня заявок нет." : "Заявок пока нет."}
+                </p>
+              )}
+              {displayedBookings && displayedBookings.length > 0 && (
           <div className="data-table-wrap">
             <table className="data-table data-table--fixed">
               <colgroup>
@@ -268,7 +301,7 @@ export function StationPage() {
                 </tr>
               </thead>
               <tbody>
-                {bookings.map((booking) => {
+                {displayedBookings.map((booking) => {
                   const client = clientOf(booking.client_id);
                   return (
                   <tr key={booking.id}>
@@ -319,6 +352,7 @@ export function StationPage() {
                     <td>
                       <AdditionalWorkPanel
                         bookingId={booking.id}
+                        bookingStatus={booking.status}
                         services={services ?? []}
                         refreshKey={reloadTick}
                       />
@@ -329,7 +363,10 @@ export function StationPage() {
               </tbody>
             </table>
           </div>
-        )}
+              )}
+            </>
+          );
+        })()}
       </div>
 
       <div className="panel">

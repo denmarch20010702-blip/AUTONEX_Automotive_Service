@@ -18,6 +18,7 @@ export function ArchiveTable({ entries }: { entries: ArchivedBooking[] }) {
             <th>ID заявки</th>
             <th>Клиент</th>
             <th>Автомобиль</th>
+            <th>Услуга</th>
             <th>Когда была запись</th>
             <th>Статус</th>
             <th>Сумма</th>
@@ -34,6 +35,7 @@ export function ArchiveTable({ entries }: { entries: ArchivedBooking[] }) {
               <td>
                 {entry.car_make} {entry.car_model}
               </td>
+              <td>{entry.services_snapshot.map((s) => s.name).join(", ") || "—"}</td>
               <td>{new Date(entry.start_at).toLocaleString()}</td>
               <td>
                 <StatusIndicator status={entry.status} />

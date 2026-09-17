@@ -31,6 +31,16 @@ class AdditionalWorkSchedule(BaseModel):
     start_at: datetime
 
 
+class AdditionalWorkScheduleBatch(BaseModel):
+    # Найдено пользователем на практике (2026-09-17): при очереди на посту
+    # НЕСКОЛЬКИМ доп. работам по одной заявке одновременно может не хватить
+    # места — раньше это означало отдельный визит (и отдельный выбор
+    # времени) на КАЖДУЮ. Один визит на все разом — один выбор времени,
+    # одна новая заявка со всеми услугами сразу (см. эндпоинт /schedule-batch).
+    work_ids: list[int]
+    start_at: datetime
+
+
 class AdditionalWorkRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

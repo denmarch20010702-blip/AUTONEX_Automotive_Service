@@ -14,7 +14,7 @@
   - `SESSION_LOG.md` — промпты и ответы ИИ-агента по ходу всей работы.
   - `DECISIONS_LOG.md` — ключевые решения, находки и действия с атрибуцией (кто сделал — пользователь или агент) и таймкодами.
 - `VERIFICATION.md` — как самостоятельно проверить текущее состояние проекта.
-- `backend/` — FastAPI-приложение (`scripts/verify.sh`, `scripts/prove_concurrency.py`, `scripts/cleanup_test_data.py`).
+- `backend/` — FastAPI-приложение (`scripts/verify.sh`, `scripts/prove_concurrency.py` — конкурентность A10, `scripts/prove_full_cycle.py` — полный цикл C6, `scripts/cleanup_test_data.py`).
 - `frontend/` — React/TypeScript-приложение (Vite).
 - `docker-compose.yml` — оркестрация `db` (PostgreSQL) + `backend` + `frontend`, плюс изолированные `db_test`/`backend_test` (профиль `test`, см. "Тесты" ниже).
 

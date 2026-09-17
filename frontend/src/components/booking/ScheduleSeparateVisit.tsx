@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getAvailableSlots, scheduleAdditionalWork, type SlotOption } from "../../api/client";
+import { getAvailableSlots, scheduleAdditionalWorks, type SlotOption } from "../../api/client";
 import { formatSlotLabel } from "./SlotPicker";
 
 function todayIso(): string {
@@ -26,15 +26,23 @@ function shiftDate(dateStr: string, deltaDays: number): string {
 // для ОТДЕЛЬНОГО визита именно на эту работу — тот же виджет "мини-
 // календарь", что и у переноса записи (RescheduleControl, B4), а не своя
 // отдельная реализация выбора даты/слота.
+//
+// Найдено пользователем на практике (2026-09-17): когда на посту уже
+// очередь, КАЖДАЯ доп. работа по отдельности не влезала — клиенту
+// приходилось открывать по отдельному мини-календарю на каждую и
+// записываться на несколько отдельных визитов. Теперь этот компонент
+// принимает СРАЗУ несколько работ (`workIds`/`serviceIds`) — один выбор
+// времени создаёт один визит на все услуги разом (см. schedule-batch на
+// backend'е, additional_works.py).
 export function ScheduleSeparateVisit({
-  workId,
-  serviceId,
+  workIds,
+  serviceIds,
   onScheduled,
   onCancel,
   onError,
 }: {
-  workId: number;
-  serviceId: number;
+  workIds: number[];
+  serviceIds: number[];
   onScheduled: () => void;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -43,20 +51,21 @@ export function ScheduleSeparateVisit({
   const [slots, setSlots] = useState<SlotOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const serviceIdsKey = serviceIds.join(",");
 
   useEffect(() => {
     setLoading(true);
-    getAvailableSlots([serviceId], date)
+    getAvailableSlots(serviceIds, date)
       .then(setSlots)
       .catch((err) => onError((err as Error).message))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, serviceId]);
+  }, [date, serviceIdsKey]);
 
   const confirm = async (slot: SlotOption) => {
     setBusy(true);
     try {
-      await scheduleAdditionalWork(workId, slot.start_at);
+      await scheduleAdditionalWorks(workIds, slot.start_at);
       onScheduled();
     } catch (err) {
       onError((err as Error).message);
@@ -68,7 +77,9 @@ export function ScheduleSeparateVisit({
   return (
     <div style={{ minWidth: 220, marginTop: "0.4rem" }}>
       <p className="panel-empty" style={{ margin: "0 0 0.4rem" }}>
-        Сейчас нет места для этой работы — выберите время отдельного визита.
+        {workIds.length > 1
+          ? `Сейчас нет места для ${workIds.length} доп. работ сразу — выберите время ОДНОГО визита на все.`
+          : "Сейчас нет места для этой работы — выберите время отдельного визита."}
       </p>
       <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.4rem" }}>
         <button type="button" className="ghost-button" onClick={() => setDate((d) => shiftDate(d, -1))}>
