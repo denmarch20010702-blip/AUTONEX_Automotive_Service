@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getAvailableSlots, scheduleAdditionalWorks, type SlotOption } from "../../api/client";
-import { formatSlotLabel } from "./SlotPicker";
+import { formatSlotLabel } from "./formatSlotLabel";
 
 function todayIso(): string {
   const now = new Date();

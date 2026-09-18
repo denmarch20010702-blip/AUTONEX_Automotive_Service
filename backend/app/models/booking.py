@@ -45,6 +45,17 @@ class Booking(Base):
             unique=True,
             postgresql_where=text("parking_spot_id IS NOT NULL"),
         ),
+        # UI_description.md п.49 (2026-09-18, найдено пользователем на
+        # практике): у одной машины может быть несколько СВОИХ заявок (разные
+        # услуги на разное время) — но физически машина одна, значит она не
+        # может держать место по второй заявке, пока не освободила место по
+        # первой. Тот же приём, что и индекс выше, только по `car_id`.
+        Index(
+            "uq_bookings_active_parked_car_id",
+            "car_id",
+            unique=True,
+            postgresql_where=text("parking_spot_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

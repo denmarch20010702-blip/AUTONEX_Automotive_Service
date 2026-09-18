@@ -17,7 +17,7 @@ import { IdentifyForm } from "../components/booking/IdentifyForm";
 import { ServiceTiles } from "../components/booking/ServiceTiles";
 import { SlotPicker } from "../components/booking/SlotPicker";
 import { SuccessCard } from "../components/booking/SuccessCard";
-import { useClientSession } from "../session/ClientSessionContext";
+import { useClientSession } from "../session/useClientSession";
 
 type Step = "services" | "slots" | "identify" | "car" | "add-car" | "success";
 

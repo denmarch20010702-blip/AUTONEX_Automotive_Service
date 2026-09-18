@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,6 +29,13 @@ PARKING_FREE_MINUTES = 120
 # самого автотаймера (демо-услуги в проекте короткие).
 PARKING_SWEEP_INTERVAL_SECONDS = 20
 
+# UI_description.md п.50 (2026-09-18): подтвердить приезд из кабинета можно
+# не раньше, чем за час до начала записи — иначе место занимается надолго
+# без необходимости и мешает другим машинам с более ранними записями.
+EARLY_ARRIVAL_LIMIT = timedelta(hours=1)
+
+logger = logging.getLogger(__name__)
+
 
 async def assign_parking_spot(session: AsyncSession, booking: Booking) -> bool:
     """Подбирает свободное место и ставит машину на него — тот же приём,
@@ -41,9 +49,31 @@ async def assign_parking_spot(session: AsyncSession, booking: Booking) -> bool:
     заявке, которая уже стоит на месте (например, run_parking_sweep обрабатывает
     устаревший в памяти объект, который тем временем получил место через
     параллельный запрос), тихо переставлял бы её на другое место и сбрасывал
-    `parked_at` — теряя уже накопленное время ожидания текущей паузы."""
+    `parked_at` — теряя уже накопленное время ожидания текущей паузы.
+
+    Найдено пользователем на практике (UI_description.md п.49, 2026-09-18):
+    физически одна машина не может стоять на двух местах одновременно — но
+    ничего не запрещало ей это, если у неё есть НЕСКОЛЬКО собственных заявок
+    (разные услуги на разное время): пока машина ещё не забрана по первому
+    визиту, второй визит той же машины (с другим `booking.id`, но тем же
+    `car_id`) мог получить своё отдельное место. Это и не экономит места для
+    других машин, и мешает освободить место под уже подтверждённую БОЛЕЕ
+    РАННЮЮ запись. Проверяем по `car_id`, не по `booking.id` — если у этой
+    машины уже есть активное место по ДРУГОЙ её заявке, новое место не
+    выдаём: машина физически уже где-то стоит."""
     if booking.parking_spot_id is not None:
         return True
+    car_already_parked = (
+        await session.execute(
+            select(Booking.id).where(
+                Booking.car_id == booking.car_id,
+                Booking.id != booking.id,
+                Booking.parking_spot_id.is_not(None),
+            ).limit(1)
+        )
+    ).first()
+    if car_already_parked is not None:
+        return False
     spots = (
         await session.execute(select(ParkingSpot).order_by(ParkingSpot.id).with_for_update())
     ).scalars().all()
@@ -54,7 +84,26 @@ async def assign_parking_spot(session: AsyncSession, booking: Booking) -> bool:
             )
         )
     ).scalars().all()
-    free_spot = next((s for s in spots if s.id not in occupied), None)
+    free_spots = [s for s in spots if s.id not in occupied]
+    if booking.status == BookingStatus.ACCEPTED:
+        # UI_description.md п.51 (2026-09-18, найдено пользователем на
+        # практике): машины, которые ЕЩЁ НЕ приехали (просто подтвердили
+        # приезд заранее), не должны выбирать все места — иначе машине,
+        # которая только что закончила обслуживание на посту, будет физически
+        # некуда съехать. Резервируем по одному месту на каждую заявку,
+        # реально сейчас работающую на посту (`on_post`) — она гарантированно
+        # понадобится, когда обслуживание закончится (см. ensure_waiting_spot
+        # ниже), просто не прямо сейчас. Ready/awaiting_approval сюда не
+        # входят — у них это МЕСТО (не резерв) уже либо есть, либо они сами
+        # проходят этой же функцией без резервирования (см. ниже).
+        reserved_for_in_service = (
+            await session.execute(
+                select(func.count()).select_from(Booking).where(Booking.status == BookingStatus.ON_POST)
+            )
+        ).scalar_one()
+        if len(free_spots) <= reserved_for_in_service:
+            return False
+    free_spot = free_spots[0] if free_spots else None
     if free_spot is None:
         return False
     booking.parking_spot_id = free_spot.id
@@ -149,6 +198,47 @@ async def confirm_parked_before_service(session: AsyncSession, booking_id: int) 
         raise ValueError("wrong_status")
     if booking.parking_spot_id is not None:
         raise ValueError("already_parked")
+    # UI_description.md п.50 (2026-09-18, найдено пользователем на практике):
+    # подтверждение приезда сильно заранее (за много часов/дней до самой
+    # записи) занимает место надолго без реальной необходимости — мешает
+    # другим машинам, у которых запись раньше по времени, нормально приехать
+    # и найти свободное место. Место можно подтвердить не раньше, чем за час
+    # до начала записи.
+    if booking.start_at - datetime.now(timezone.utc) > EARLY_ARRIVAL_LIMIT:
+        raise ValueError("too_early")
+    # UI_description.md п.49 (2026-09-18): отдельная, понятная причина отказа
+    # — не путать с "мест физически нет", если дело в том, что ЭТА КОНКРЕТНАЯ
+    # машина уже стоит на месте по другой своей заявке (см. assign_parking_
+    # spot выше).
+    car_already_parked = (
+        await session.execute(
+            select(Booking.id).where(
+                Booking.car_id == booking.car_id,
+                Booking.id != booking.id,
+                Booking.parking_spot_id.is_not(None),
+            ).limit(1)
+        )
+    ).first()
+    if car_already_parked is not None:
+        raise ValueError("car_already_parked_elsewhere")
+    # Тот же конфликт, но со стороны поста, не парковки (2026-09-18, разбор
+    # сценариев посты×парковка×слоты×машина): `awaiting_approval` уже ловится
+    # проверкой выше (у такой заявки уже есть место), но `on_post` места не
+    # держит (см. leave_parking) — без этой проверки клиент мог бы подтвердить
+    # приезд по ОДНОЙ заявке машины, пока та же машина физически обслуживается
+    # на посту по ДРУГОЙ её заявке (продление occupancy, п.35, "растянуло"
+    # первую заявку до времени, когда должна была начаться вторая).
+    car_on_post_elsewhere = (
+        await session.execute(
+            select(Booking.id).where(
+                Booking.car_id == booking.car_id,
+                Booking.id != booking.id,
+                Booking.status == BookingStatus.ON_POST,
+            ).limit(1)
+        )
+    ).first()
+    if car_on_post_elsewhere is not None:
+        raise ValueError("car_already_parked_elsewhere")
     if not await assign_parking_spot(session, booking):
         raise ValueError("no_free_spot")
     await session.commit()
@@ -206,6 +296,7 @@ async def run_parking_sweep(session: AsyncSession) -> None:
             # _parking_sweep) и мешала бы конкурентным запросам к этой же
             # заявке.
             await session.rollback()
+            logger.debug("Skipped due booking %s during parking sweep (race or conflict)", booking_id, exc_info=True)
             continue
 
     # Найдено при код-ревью (2026-09-18): раньше все подходящие заявки
@@ -245,6 +336,10 @@ async def run_parking_sweep(session: AsyncSession) -> None:
             continue
         if await assign_parking_spot(session, booking):
             await session.commit()
+            logger.info("Parking sweep assigned booking %s a free spot", booking_id)
+
+    if due:
+        logger.info("Parking sweep processed %s due booking(s)", len(due))
 
 
 async def _parking_sweep() -> None:

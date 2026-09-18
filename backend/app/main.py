@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,15 +16,20 @@ from app.api import (
     station,
     tire_sets,
 )
+from app.core.logging import configure_logging
 from app.services.overdue_bookings import schedule_overdue_sweep
 from app.services.parking import schedule_parking_sweep
 from app.services.reminders import schedule_reminder_sweep
 from app.services.robot_timer import schedule_stalled_on_post_sweep, scheduler
 from app.services.tire_season_reminders import schedule_tire_season_sweep
 
+configure_logging()
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting up: scheduling background jobs")
     schedule_reminder_sweep(scheduler)
     schedule_overdue_sweep(scheduler)
     schedule_tire_season_sweep(scheduler)
@@ -38,7 +44,9 @@ async def lifespan(app: FastAPI):
     # было в момент готовности (см. app/services/parking.py).
     schedule_parking_sweep(scheduler)
     scheduler.start()
+    logger.info("Background jobs scheduled and running")
     yield
+    logger.info("Shutting down: stopping background jobs")
     scheduler.shutdown(wait=False)
 
 

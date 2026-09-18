@@ -7,8 +7,10 @@ import { NotificationDot } from "./components/NotificationDot";
 import { CabinetPage } from "./pages/CabinetPage";
 import { BookingPage } from "./pages/BookingPage";
 import { StationPage } from "./pages/StationPage";
-import { ClientSessionProvider, useClientSession } from "./session/ClientSessionContext";
-import { NotificationProvider, useNotifications } from "./session/NotificationContext";
+import { ClientSessionProvider } from "./session/ClientSessionContext";
+import { useClientSession } from "./session/useClientSession";
+import { NotificationProvider } from "./session/NotificationContext";
+import { useNotifications } from "./session/useNotifications";
 
 function BackendStatus() {
   const [status, setStatus] = useState<"checking" | "ok" | "error">("checking");

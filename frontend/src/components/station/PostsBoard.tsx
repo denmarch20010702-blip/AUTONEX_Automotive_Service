@@ -1,5 +1,6 @@
 import type { Booking, CarInfo, ClientInfo } from "../../api/client";
 import { Countdown, UpcomingCountdown } from "../Countdown";
+import { statusOf } from "./postStatus";
 
 // Прямая просьба пользователя (2026-09-14): наверху экрана станции — 3
 // прямоугольника, обозначающих реальные физические посты (см.
@@ -10,49 +11,13 @@ import { Countdown, UpcomingCountdown } from "../Countdown";
 //   оранжевый — на пост скоро приедет машина (запись принята, но ещё не
 //               наступило время приёма на пост — п. "исправь баг" выше);
 //   красный  — машина сейчас в работе на этом посту.
-// "Скоро" — ближайшая по времени принятая (accepted) запись на этот пост
-// начинается в пределах NEAR_FUTURE_MS; более дальние по времени записи не
-// делают физически свободный сейчас пост "занятым" на вид.
-const NEAR_FUTURE_MS = 2 * 60 * 60 * 1000; // 2 часа
-
+// Сама логика статуса (statusOf) — в postStatus.ts, отдельно от компонента
+// (react-refresh/only-export-components — см. api/eventsContext.ts).
 const POSTS = [
   { id: 1, label: "Пост 1" },
   { id: 2, label: "Пост 2" },
   { id: 3, label: "Пост 3" },
 ];
-
-type PostState = "free" | "reserved" | "busy";
-
-function statusOf(
-  bookings: Booking[],
-  postId: number,
-): { state: PostState; hint: string; booking?: Booking; next?: Booking } {
-  const onThisPost = bookings.filter((b) => b.post_id === postId);
-
-  const upcoming = onThisPost
-    .filter((b) => b.status === "accepted")
-    .sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime())[0];
-  const upcomingSoon =
-    upcoming && new Date(upcoming.start_at).getTime() - Date.now() <= NEAR_FUTURE_MS
-      ? upcoming
-      : undefined;
-
-  const active = onThisPost.find((b) => b.status === "on_post");
-  if (active) {
-    // Найдено пользователем на практике (2026-09-16): если следующая
-    // запись уже принята на ТОТ ЖЕ пост, где прямо сейчас работает другая
-    // машина, очередь была совсем не видна — пост просто выглядел "занят",
-    // без намёка, что кто-то уже ждёт следом. Красный (занятость) остаётся
-    // главным состоянием, но теперь показываем и "следующего в очереди".
-    return { state: "busy", hint: "Машина в работе", booking: active, next: upcomingSoon };
-  }
-
-  if (upcomingSoon) {
-    return { state: "reserved", hint: "Скоро приедет машина", booking: upcomingSoon };
-  }
-
-  return { state: "free", hint: "Свободен" };
-}
 
 // UI_description.md п.42 (2026-09-15): на доске постов должно быть видно,
 // чья это машина (имя владельца), какая машина и сколько времени осталось —

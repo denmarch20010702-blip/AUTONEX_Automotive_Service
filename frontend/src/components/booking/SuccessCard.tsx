@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
-import { useBookingStatus } from "../../api/events";
-import { formatSlotLabel } from "./SlotPicker";
+import { useBookingStatus } from "../../api/eventHooks";
+import { formatSlotLabel } from "./formatSlotLabel";
 import { CheckCircleIcon } from "../icons";
 import { StatusIndicator } from "../StatusIndicator";
 

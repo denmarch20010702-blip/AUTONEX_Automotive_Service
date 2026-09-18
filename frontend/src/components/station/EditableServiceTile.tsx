@@ -2,7 +2,8 @@ import { useState } from "react";
 
 import { deleteService, updateService, type Service } from "../../api/client";
 import { formatDuration, splitMinutes, toTotalMinutes } from "../../utils/duration";
-import { iconForService, PencilIcon } from "../icons";
+import { iconForService } from "../iconForService";
+import { PencilIcon } from "../icons";
 
 // По заметке пользователя: рядом с крестиком удаления нужен карандаш для
 // редактирования уже существующей услуги.

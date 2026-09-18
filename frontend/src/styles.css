@@ -588,12 +588,12 @@ body {
   box-shadow: 0 0 6px 1px rgba(61, 220, 115, 0.6);
 }
 
-.parking-spot--waiting {
+.parking-spot--reserved {
   border-color: #f5a623;
   box-shadow: 0 0 6px 1px rgba(245, 166, 35, 0.6);
 }
 
-.parking-spot--ready {
+.parking-spot--occupied {
   border-color: #e5484d;
   box-shadow: 0 0 6px 1px rgba(229, 72, 77, 0.6);
 }

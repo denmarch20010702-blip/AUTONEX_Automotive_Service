@@ -1,8 +1,9 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { getPendingAdditionalWorksCount, getStationActionableCount } from "../api/client";
-import { useBookingEvents } from "../api/events";
-import { useClientSession } from "./ClientSessionContext";
+import { useBookingEvents } from "../api/eventHooks";
+import { useClientSession } from "./useClientSession";
+import { NotificationContext } from "./notificationStore";
 
 // UI_description.md п.17/22: красная точка у "Личный кабинет" и у "Станция"
 // в шапке держится на РЕАЛЬНОМ количестве вещей, требующих решения — не на
@@ -12,16 +13,6 @@ import { useClientSession } from "./ClientSessionContext";
 // пересчитываются с backend'а при монтировании и при каждом релевантном
 // SSE-событии, поэтому сами падают до 0, когда решения приняты, и сами
 // растут, если появилось новое.
-interface NotificationValue {
-  clientPendingCount: number;
-  stationActionableCount: number;
-}
-
-const NotificationContext = createContext<NotificationValue>({
-  clientPendingCount: 0,
-  stationActionableCount: 0,
-});
-
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const { client } = useClientSession();
   const events = useBookingEvents();
@@ -72,8 +63,4 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       {children}
     </NotificationContext.Provider>
   );
-}
-
-export function useNotifications(): NotificationValue {
-  return useContext(NotificationContext);
 }

@@ -11,6 +11,9 @@
 ```bash
 docker compose up --build
 docker compose --profile test run --rm backend_test pytest -q
+docker compose exec backend ruff check .
+docker compose exec frontend npm test
+docker compose exec frontend npm run lint
 bash scripts/verify.sh
 ```
 
@@ -26,6 +29,7 @@ bash scripts/verify.sh
 - Не обходите статусную машину заявки и не начисляйте деньги до `issued`.
 - Не расширяйте права открытого demo API незаметно. Полная авторизация клиента/станции — отдельное решение и должна быть согласована до реализации.
 - Не перезаписывайте чужие незакоммиченные изменения. Перед началом и перед передачей проверяйте `git status` и `git diff --check`.
+- Одна машина (`car_id`) не может быть на двух постах, или на посту и на парковке, одновременно — это проверяется явно в нескольких точках входа (`bookings.py::update_booking_status`, `parking.py::confirm_parked_before_service`/`assign_parking_spot`), а не только неявно через время записи. При добавлении новой точки перехода в `on_post`/новой логики парковки — проверьте, нужна ли та же защита.
 
 ## Документация и журналирование
 

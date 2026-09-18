@@ -1,6 +1,6 @@
 import type { Service } from "../../api/client";
 import { formatDuration } from "../../utils/duration";
-import { iconForService } from "../icons";
+import { iconForService } from "../iconForService";
 
 export function ServiceTiles({
   services,

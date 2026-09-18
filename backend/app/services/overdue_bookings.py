@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -51,6 +52,8 @@ MIN_OVERDUE_GRACE = timedelta(minutes=2)
 # приём `make_startable_now` ("сейчас минус 5 секунд") всё равно защищён.
 SWEEP_INTERVAL_SECONDS = 30
 
+logger = logging.getLogger(__name__)
+
 
 async def cancel_bookings_that_would_delay_the_queue(session: AsyncSession) -> int:
     """Находит просроченные (`accepted`, `start_at` в прошлом) заявки, приём
@@ -94,6 +97,13 @@ async def cancel_bookings_that_would_delay_the_queue(session: AsyncSession) -> i
         except Exception:
             # Гонка (заявку уже приняли/отменили вручную между выборкой и
             # этим циклом) — пропускаем, не роняем весь sweep из-за одной.
+            # Явный rollback (D3, 2026-09-18, тот же приём, что и в
+            # parking.py::run_parking_sweep, найденный код-ревью 2026-09-18) —
+            # без него "грязное" состояние объекта заявки из неудачной
+            # попытки осталось бы в сессии до следующего autoflush, рискуя
+            # закоммититься случайно вместе со следующей успешной итерацией.
+            await session.rollback()
+            logger.debug("Skipped overdue booking %s (race or conflict)", booking_id, exc_info=True)
             continue
         cancelled += 1
         if client_email:
@@ -108,6 +118,8 @@ async def cancel_bookings_that_would_delay_the_queue(session: AsyncSession) -> i
                 ),
             )
             await session.commit()
+    if cancelled:
+        logger.info("Overdue sweep cancelled %s booking(s)", cancelled)
     return cancelled
 
 

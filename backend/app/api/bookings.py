@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -50,6 +51,8 @@ from app.services.slots import (
     is_on_slot_grid,
     post_is_free,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -350,6 +353,31 @@ async def update_booking_status(
             ),
         )
 
+    # Найдено при разборе сценариев конфликтов посты×парковка×слоты×машина
+    # (2026-09-18, продолжение UI_description.md п.49): та же машина физически
+    # не может обслуживаться на двух постах одновременно. `car_is_free`
+    # проверяет это только в момент СОЗДАНИЯ заявки — не спасает, если другая
+    # заявка ЭТОЙ ЖЕ машины уже реально на посту/на паузе доп. работы дольше,
+    # чем планировалось (продление occupancy, п.35), и её собственный слот
+    # успел "наступить". Проверяем прямо здесь, при приёме, а не только на
+    # стороне парковки — иначе то же самое можно было обойти через ручной
+    # приём станцией, минуя `confirm_parked_before_service`.
+    if data.status == BookingStatus.ON_POST:
+        car_busy_elsewhere = (
+            await session.execute(
+                select(Booking.id).where(
+                    Booking.car_id == booking.car_id,
+                    Booking.id != booking.id,
+                    Booking.status.in_([BookingStatus.ON_POST, BookingStatus.AWAITING_APPROVAL]),
+                ).limit(1)
+            )
+        ).first()
+        if car_busy_elsewhere is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Эта машина сейчас обслуживается по другой записи — сначала завершите её",
+            )
+
     # Заметка пользователя (B2, уточнение 2026-09-13): пока клиент не принял
     # или не отклонил предложенную доп. работу, статус заявки дальше не
     # меняется — кроме отмены самой заявки (в любой момент) и входа в само
@@ -610,7 +638,13 @@ async def update_booking_status(
             try:
                 await run_ai_diagnostic(session, booking.id)
             except Exception:
-                pass
+                # D3 (2026-09-18): раньше сбой ИИ-диагностики (БД, сеть до
+                # LLM) был совершенно невидим — станция продолжала работать
+                # как ни в чём не бывало, но без единого лишнего предложения
+                # доп. работы, и никто не узнал бы почему.
+                logger.warning(
+                    "AI diagnostic failed for booking %s", booking.id, exc_info=True
+                )
 
     return BookingRead(**snapshot)
 
@@ -663,6 +697,11 @@ async def confirm_parked(
             "booking_not_found": "Заявка не найдена",
             "wrong_status": "Подтвердить приезд можно только для принятой, но ещё не начатой заявки",
             "already_parked": "Машина уже отмечена как стоящая на парковке",
+            "too_early": "Подтвердить приезд можно не раньше, чем за час до начала записи",
+            "car_already_parked_elsewhere": (
+                "Эта машина уже на станции (на парковке или в работе) по другой "
+                "вашей записи — сначала завершите её, прежде чем подтверждать эту"
+            ),
             "no_free_spot": "Свободных мест на парковке сейчас нет — попробуйте чуть позже",
         }.get(str(exc), "Не удалось подтвердить приезд")
         status_code = 404 if str(exc) == "booking_not_found" else 409

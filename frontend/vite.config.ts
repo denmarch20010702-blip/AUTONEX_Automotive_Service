@@ -1,8 +1,16 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
+  // D2 (2026-09-18): фронтенд-тесты — раньше их было 0, только backend.
+  // `vitest` переиспользует этот же конфиг (алиасы, плагин React), а не
+  // требует отдельного jest/babel-конвейера — минимальная надстройка.
+  test: {
+    environment: "jsdom",
+    setupFiles: "./src/setupTests.ts",
+    globals: true,
+  },
   server: {
     host: true,
     port: 5173,

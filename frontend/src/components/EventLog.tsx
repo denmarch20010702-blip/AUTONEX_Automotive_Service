@@ -1,4 +1,4 @@
-import type { BookingEvent } from "../api/events";
+import type { BookingEvent } from "../api/eventsContext";
 
 const LABELS: Record<BookingEvent["type"], string> = {
   booking_created: "Новая заявка",

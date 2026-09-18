@@ -1,21 +1,11 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getClient, type ClientInfo } from "../api/client";
+import { ClientSessionContext } from "./clientSessionStore";
 
 const KNOWN_KEY = "autonex.knownClients";
 const ACTIVE_KEY = "autonex.activeClientId";
-
-interface ClientSessionValue {
-  client: ClientInfo | null;
-  knownClients: ClientInfo[];
-  login: (client: ClientInfo) => void;
-  logout: () => void;
-  switchTo: (clientId: number) => void;
-  forget: (clientId: number) => void;
-}
-
-const ClientSessionContext = createContext<ClientSessionValue | null>(null);
 
 function loadKnown(): ClientInfo[] {
   try {
@@ -89,10 +79,4 @@ export function ClientSessionProvider({ children }: { children: ReactNode }) {
       {children}
     </ClientSessionContext.Provider>
   );
-}
-
-export function useClientSession(): ClientSessionValue {
-  const ctx = useContext(ClientSessionContext);
-  if (!ctx) throw new Error("useClientSession must be used within ClientSessionProvider");
-  return ctx;
 }

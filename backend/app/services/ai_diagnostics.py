@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 
@@ -37,6 +38,8 @@ from app.services.outbox_email import notify_pending_additional_works
 # Pluggable-интерфейс ниже не привязан к этому конкретному сигналу — при
 # появлении новых полей на Car/Booking рефакторинг понадобится только внутри
 # _rule_based_picks/_llm_picks, не в вызывающем коде.
+logger = logging.getLogger(__name__)
+
 MILEAGE_THRESHOLD_KM = 10_000
 
 # Найдено пользователем на практике (2026-09-15): с широким списком ключевых
@@ -174,7 +177,15 @@ async def generate_diagnostic_suggestions(
         try:
             return await _llm_picks(car, candidates)
         except Exception:
-            pass
+            # D3 (2026-09-18): раньше сбой LLM был совершенно невидим — при
+            # сломанном/просроченном LLM_API_KEY станция молча и постоянно
+            # работала на rule-based, никак не сигнализируя, что платный
+            # LLM-путь вообще не используется.
+            logger.warning(
+                "LLM diagnostic call failed for car %s, falling back to rule-based",
+                car.id,
+                exc_info=True,
+            )
     return _rule_based_picks(car, candidates)
 
 

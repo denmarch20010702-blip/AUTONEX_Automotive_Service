@@ -1,5 +1,5 @@
 import type { TireSetArchiveEntry } from "../api/client";
-import { formatSlotLabel } from "./booking/SlotPicker";
+import { formatSlotLabel } from "./booking/formatSlotLabel";
 
 // Журнал приёма/выдачи шин (UI_description.md п.28) — выданный комплект
 // переезжает сюда и удаляется из живой `tire-sets`, тот же принцип, что и

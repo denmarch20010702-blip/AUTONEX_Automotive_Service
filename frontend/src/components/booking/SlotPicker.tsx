@@ -1,4 +1,5 @@
 import type { SlotOption } from "../../api/client";
+import { formatSlotLabel } from "./formatSlotLabel";
 
 // Границы "утро/день/вечер/ночь" — заданы пользователем в
 // buisness/UI_description.md: утро 04:00-10:00, день 10:01-16:00,
@@ -14,15 +15,6 @@ function bucketForHour(hour: number): string {
 }
 
 const BUCKET_ORDER = ["Утро", "День", "Вечер", "Ночь"];
-
-export function formatSlotLabel(iso: string): string {
-  const d = new Date(iso);
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${dd}.${mm}.${d.getFullYear()} - ${hh}:${min}`;
-}
 
 // Сдвиг "YYYY-MM-DD" на N дней в локальном календаре устройства — через
 // компоненты даты, а не парсинг строки как UTC (та же ловушка JS, что уже

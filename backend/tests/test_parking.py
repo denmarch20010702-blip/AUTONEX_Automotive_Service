@@ -68,6 +68,41 @@ async def make_booking(client: AsyncClient, days_offset: int, *, duration_minute
         raise
 
 
+async def make_second_booking_for_same_car(
+    client: AsyncClient, client_id: int, car_id: int, days_offset: int, *, duration_minutes: int = 10
+) -> tuple[int, int]:
+    """Вторая заявка для ТОЙ ЖЕ машины и клиента — другая услуга, другое
+    время (UI_description.md п.49: у машины может быть несколько отдельных
+    визитов на разное время)."""
+    service_resp = await client.post(
+        "/catalog",
+        json={"name": f"Parking Service {uuid4().hex[:8]}", "duration_minutes": duration_minutes, "price": "300.00"},
+    )
+    service_id = service_resp.json()["id"]
+    day = date.today() + timedelta(days=days_offset)
+    slots = (
+        await client.get(
+            "/bookings/available-slots",
+            params={
+                "service_ids": [service_id],
+                "date": datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat(),
+            },
+        )
+    ).json()
+    if not slots:
+        pytest.skip(f"на день +{days_offset} не осталось свободных слотов")
+    booking_resp = await client.post(
+        "/bookings",
+        json={
+            "client_id": client_id,
+            "car_id": car_id,
+            "start_at": slots[0]["start_at"],
+            "service_ids": [service_id],
+        },
+    )
+    return service_id, booking_resp.json()["id"]
+
+
 async def cleanup(client: AsyncClient, *, booking_id: int, car_id: int, client_id: int, service_id: int) -> None:
     async with async_session() as session:
         await session.execute(sa_delete(AdditionalWork).where(AdditionalWork.booking_id == booking_id))
@@ -97,6 +132,15 @@ async def set_parked_at(booking_id: int, when: datetime) -> None:
         await session.commit()
 
 
+async def set_start_at(booking_id: int, when: datetime) -> None:
+    async with async_session() as session:
+        booking = await session.get(Booking, booking_id)
+        duration = booking.end_at - booking.start_at
+        booking.start_at = when
+        booking.end_at = when + duration
+        await session.commit()
+
+
 async def get_booking_row(booking_id: int) -> Booking:
     async with async_session() as session:
         return await session.get(Booking, booking_id)
@@ -120,6 +164,7 @@ async def test_confirm_parked_requires_accepted_status(client: AsyncClient) -> N
 async def test_confirm_parked_assigns_a_free_spot(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 601)
     try:
+        await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=30))
         resp = await client.post(f"/bookings/{booking_id}/park")
         assert resp.status_code == 200
         body = resp.json()
@@ -134,6 +179,7 @@ async def test_confirm_parked_assigns_a_free_spot(client: AsyncClient) -> None:
 async def test_confirm_parked_twice_returns_409(client: AsyncClient) -> None:
     client_id, car_id, service_id, booking_id = await make_booking(client, 602)
     try:
+        await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=30))
         resp = await client.post(f"/bookings/{booking_id}/park")
         assert resp.status_code == 200
 
@@ -150,11 +196,222 @@ async def test_confirm_parked_nonexistent_booking_404(client: AsyncClient) -> No
 
 
 @pytest.mark.asyncio
+async def test_confirm_parked_more_than_hour_before_start_returns_409(client: AsyncClient) -> None:
+    """UI_description.md п.50 (2026-09-18, найдено пользователем на
+    практике): подтверждение приезда сильно заранее занимает место надолго
+    без необходимости и мешает машинам с более ранними записями."""
+    client_id, car_id, service_id, booking_id = await make_booking(client, 612)
+    try:
+        # `make_booking` записывает на слот далеко в будущем — заведомо
+        # больше часа от "сейчас", без специального сдвига времени.
+        resp = await client.post(f"/bookings/{booking_id}/park")
+        assert resp.status_code == 409
+        assert "за час" in resp.json()["detail"]
+        assert (await get_booking_row(booking_id)).parking_spot_id is None
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_confirm_parked_within_hour_before_start_succeeds(client: AsyncClient) -> None:
+    client_id, car_id, service_id, booking_id = await make_booking(client, 613)
+    try:
+        await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=30))
+        resp = await client.post(f"/bookings/{booking_id}/park")
+        assert resp.status_code == 200
+        assert resp.json()["parking_spot_id"] is not None
+    finally:
+        await cleanup(client, booking_id=booking_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_pre_service_arrivals_reserve_a_spot_for_cars_currently_on_post(client: AsyncClient) -> None:
+    """UI_description.md п.51 (2026-09-18, найдено пользователем на
+    практике): места не должны все уйти под заранее приехавшие машины —
+    иначе машине, которая только что закончила обслуживание на посту, будет
+    физически некуда съехать. Резервируем по одному месту на каждую заявку,
+    реально работающую на посту (on_post) прямо сейчас."""
+    on_post_booking = None
+    pre_service_bookings: list[tuple[int, int, int, int]] = []
+    try:
+        # Одна заявка реально на посту — под неё должно резервироваться
+        # место, хотя у неё самой пока места нет (см. leave_parking).
+        client_id0, car_id0, service_id0, on_post_booking = await make_booking(client, 614, duration_minutes=1)
+        await make_startable_now(on_post_booking)
+        resp = await client.post(f"/bookings/{on_post_booking}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        # Заполняем ВСЕ 6 мест заранее приехавшими машинами — по идее шестая
+        # (последняя свободная) должна остаться зарезервированной для той,
+        # что сейчас на посту, и её заявке места не хватит. Короткая
+        # длительность (1 мин) + разведение по времени с запасом от окна
+        # оккупации on_post_booking (см. выше) и друг от друга — иначе
+        # разным дальним дням мог достаться один и тот же пост и они
+        # столкнулись бы после сдвига в одно и то же "почти сейчас" окно
+        # (EXCLUDE-ограничение "no_overlapping_bookings").
+        for i in range(6):
+            ids = await make_booking(client, 615 + i, duration_minutes=1)
+            pre_service_bookings.append(ids)
+            _, _, _, booking_id = ids
+            await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=2 + i * 8))
+            resp = await client.post(f"/bookings/{booking_id}/park")
+            if i < 5:
+                assert resp.status_code == 200, f"попытка {i} должна была получить место"
+            else:
+                # Шестая заранее приехавшая машина не должна забрать
+                # последнее свободное место — оно зарезервировано.
+                assert resp.status_code == 409
+                assert "за час" not in resp.json()["detail"]
+
+        # Как только заявка на посту заканчивает обслуживание (ready), она
+        # сама получает то самое зарезервированное место.
+        resp = await client.post(f"/bookings/{on_post_booking}/status", json={"status": "ready"})
+        assert resp.status_code == 200
+        assert resp.json()["parking_spot_id"] is not None
+    finally:
+        for client_id_i, car_id_i, service_id_i, booking_id_i in pre_service_bookings:
+            await cleanup(client, booking_id=booking_id_i, car_id=car_id_i, client_id=client_id_i, service_id=service_id_i)
+        if on_post_booking is not None:
+            await cleanup(client, booking_id=on_post_booking, car_id=car_id0, client_id=client_id0, service_id=service_id0)
+
+
+@pytest.mark.asyncio
+async def test_same_car_cannot_occupy_two_parking_spots_at_once(client: AsyncClient) -> None:
+    """Найденный пользователем на практике реальный баг (UI_description.md
+    п.49, 2026-09-18): у одной машины может быть несколько своих заявок на
+    разные услуги в разное время — но физически машина одна, и второе
+    подтверждение приезда не должно выдавать ей отдельное место, пока первое
+    ещё не освобождено (не выдано)."""
+    client_id, car_id, service_id, booking1_id = await make_booking(client, 610)
+    service2_id = booking2_id = None
+    try:
+        await set_start_at(booking1_id, datetime.now(timezone.utc) + timedelta(minutes=5))
+        resp = await client.post(f"/bookings/{booking1_id}/park")
+        assert resp.status_code == 200
+        first_spot = resp.json()["parking_spot_id"]
+        assert first_spot is not None
+
+        service2_id, booking2_id = await make_second_booking_for_same_car(client, client_id, car_id, 611)
+        await set_start_at(booking2_id, datetime.now(timezone.utc) + timedelta(minutes=15))
+        resp = await client.post(f"/bookings/{booking2_id}/park")
+        assert resp.status_code == 409
+        assert "уже на станции" in resp.json()["detail"]
+
+        # Место так и не назначено второй заявке — не "переставили" её тихо.
+        second = await get_booking_row(booking2_id)
+        assert second.parking_spot_id is None
+
+        # После выдачи первой машины (место освобождено) вторая заявка та же
+        # самая машина спокойно может подтвердить приезд.
+        await make_startable_now(booking1_id)
+        resp = await client.post(f"/bookings/{booking1_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        resp = await client.post(f"/bookings/{booking1_id}/status", json={"status": "ready"})
+        assert resp.status_code == 200
+        resp = await client.post(f"/bookings/{booking1_id}/status", json={"status": "issued"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking2_id}/park")
+        assert resp.status_code == 200
+        assert resp.json()["parking_spot_id"] == first_spot
+    finally:
+        if booking2_id is not None:
+            async with async_session() as session:
+                await session.execute(sa_delete(AdditionalWork).where(AdditionalWork.booking_id == booking2_id))
+                await session.execute(sa_delete(BookingArchive).where(BookingArchive.original_booking_id == booking2_id))
+                booking = await session.get(Booking, booking2_id)
+                if booking is not None:
+                    await session.delete(booking)
+                await session.commit()
+        if service2_id is not None:
+            await client.delete(f"/catalog/{service2_id}")
+        await cleanup(client, booking_id=booking1_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
+async def test_same_car_cannot_be_on_two_posts_at_once(client: AsyncClient) -> None:
+    """Разбор сценариев посты×парковка×слоты×машина (2026-09-18, продолжение
+    UI_description.md п.49): продление occupancy заявки №1 (п.35) может
+    "растянуть" её до момента, когда должна начаться заявка №2 ТОЙ ЖЕ
+    машины — обе не пересекались по времени в момент создания (`car_is_free`
+    проверяет это только тогда), но реально дошли до попытки приёма
+    одновременно. Машина физически не может обслуживаться на двух постах."""
+    client_id, car_id, service_id, booking1_id = await make_booking(client, 620)
+    service2_id = booking2_id = None
+    try:
+        await make_startable_now(booking1_id)
+        resp = await client.post(f"/bookings/{booking1_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+
+        # Заявка №1 формально уже должна была закончиться (её `end_at` в
+        # прошлом), но статус ещё `on_post` — та самая гонка "таймер не
+        # успел довести до ready" (или доп. работа ещё не отработана), а не
+        # надуманная ситуация. Двигаем `end_at` в прошлое прямым UPDATE —
+        # не через API, потому что нас интересует именно рассинхрон
+        # времени/статуса, а не сам механизм автотаймера.
+        now = datetime.now(timezone.utc)
+        async with async_session() as session:
+            b1 = await session.get(Booking, booking1_id)
+            b1.end_at = now - timedelta(seconds=1)
+            await session.commit()
+
+        # Заявка №2 той же машины — НЕ пересекается по времени с заявкой №1
+        # (начинается ровно там, где та формально закончилась), но тоже уже
+        # "подошла" (`start_at` в прошлом). `no_overlapping_car_bookings`
+        # (EXCLUDE-ограничение A4) это разрешает — окна не перекрываются,
+        # только наша новая проверка статуса должна остановить приём.
+        service2_id, booking2_id = await make_second_booking_for_same_car(client, client_id, car_id, 621)
+        async with async_session() as session:
+            b2 = await session.get(Booking, booking2_id)
+            duration = b2.end_at - b2.start_at
+            b2.start_at = now - timedelta(seconds=1)
+            b2.end_at = b2.start_at + duration
+            await session.commit()
+
+        resp = await client.post(f"/bookings/{booking2_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 409
+        assert "обслуживается по другой записи" in resp.json()["detail"]
+        assert (await get_booking_row(booking2_id)).status == "accepted"
+
+        # Пока заявка №1 на посту, подтвердить парковку по заявке №2 той же
+        # машины тоже нельзя — та же самая машина не может быть и на посту,
+        # и (готовящейся встать) на парковке одновременно.
+        resp = await client.post(f"/bookings/{booking2_id}/park")
+        assert resp.status_code == 409
+        assert "уже на станции" in resp.json()["detail"]
+
+        # Как только заявка №1 освобождает пост (выдана), заявку №2 принять
+        # уже можно как обычно.
+        resp = await client.post(f"/bookings/{booking1_id}/status", json={"status": "ready"})
+        assert resp.status_code == 200
+        resp = await client.post(f"/bookings/{booking1_id}/status", json={"status": "issued"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/bookings/{booking2_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+    finally:
+        if booking2_id is not None:
+            async with async_session() as session:
+                await session.execute(sa_delete(AdditionalWork).where(AdditionalWork.booking_id == booking2_id))
+                await session.execute(sa_delete(BookingArchive).where(BookingArchive.original_booking_id == booking2_id))
+                booking = await session.get(Booking, booking2_id)
+                if booking is not None:
+                    await session.delete(booking)
+                await session.commit()
+        if service2_id is not None:
+            await client.delete(f"/catalog/{service2_id}")
+        await cleanup(client, booking_id=booking1_id, car_id=car_id, client_id=client_id, service_id=service_id)
+
+
+@pytest.mark.asyncio
 async def test_parking_sweep_auto_accepts_confirmed_arrival_when_time_arrives(client: AsyncClient) -> None:
     from app.services.parking import run_parking_sweep
 
     client_id, car_id, service_id, booking_id = await make_booking(client, 603)
     try:
+        # В пределах часа до начала (п.50) — подтвердить приезд уже можно,
+        # но до самого start_at ещё есть время.
+        await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=30))
         resp = await client.post(f"/bookings/{booking_id}/park")
         assert resp.status_code == 200
         spot_id = resp.json()["parking_spot_id"]
@@ -183,6 +440,7 @@ async def test_leaving_parking_records_wait_before_service(client: AsyncClient) 
 
     client_id, car_id, service_id, booking_id = await make_booking(client, 604)
     try:
+        await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=30))
         resp = await client.post(f"/bookings/{booking_id}/park")
         assert resp.status_code == 200
 
@@ -365,6 +623,7 @@ async def test_surcharge_added_after_grace_period_combines_both_phases(client: A
     # 30 минут сверх 2 бесплатных часов, по ставке из station_settings.
     client_id, car_id, service_id, booking_id = await make_booking(client, 609)
     try:
+        await set_start_at(booking_id, datetime.now(timezone.utc) + timedelta(minutes=30))
         resp = await client.post(f"/bookings/{booking_id}/park")
         assert resp.status_code == 200
         await set_parked_at(booking_id, datetime.now(timezone.utc) - timedelta(minutes=50))
@@ -412,6 +671,11 @@ async def test_all_spots_occupied_returns_409_then_sweep_fills_ready_booking_onc
         for i in range(6):
             holder = await make_booking(client, 650 + i)
             holders.append(holder)
+            # Разводим по времени с шагом >= длительности (10 мин) — иначе
+            # разные заявки на РАЗНЫЕ дальние дни могли достаться одному и
+            # тому же посту и столкнуться после сдвига в одно и то же "почти
+            # сейчас" окно (EXCLUDE-ограничение "no_overlapping_bookings").
+            await set_start_at(holder[3], datetime.now(timezone.utc) + timedelta(minutes=5 + i * 10))
             resp = await client.post(f"/bookings/{holder[3]}/park")
             assert resp.status_code == 200, f"место {i} должно быть свободно"
 

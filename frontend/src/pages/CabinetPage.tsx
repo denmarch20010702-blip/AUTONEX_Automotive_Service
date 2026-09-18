@@ -29,19 +29,19 @@ import {
   type TireSet,
   type TireSetArchiveEntry,
 } from "../api/client";
-import { useDebouncedEventTick } from "../api/events";
+import { useDebouncedEventTick } from "../api/eventHooks";
 import { AddCarForm } from "../components/booking/AddCarForm";
 import { CAR_MAKES, modelsForMake } from "../data/carCatalog";
 import { ClientAdditionalWorks } from "../components/booking/ClientAdditionalWorks";
 import { TireSetArchiveTable } from "../components/TireSetArchiveTable";
 import { IdentifyForm } from "../components/booking/IdentifyForm";
 import { RescheduleControl } from "../components/booking/RescheduleControl";
-import { formatSlotLabel } from "../components/booking/SlotPicker";
+import { formatSlotLabel } from "../components/booking/formatSlotLabel";
 import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { CarIcon, PlusIcon } from "../components/icons";
 import { Pagination } from "../components/Pagination";
 import { StatusIndicator } from "../components/StatusIndicator";
-import { useClientSession } from "../session/ClientSessionContext";
+import { useClientSession } from "../session/useClientSession";
 
 const CANCELLABLE = new Set(["accepted", "on_post", "awaiting_approval", "ready"]);
 

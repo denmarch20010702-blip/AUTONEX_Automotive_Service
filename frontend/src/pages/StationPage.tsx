@@ -23,14 +23,14 @@ import {
   type TireSet,
   type TireSetArchiveEntry,
 } from "../api/client";
-import { useBookingEvents, useDebouncedEventTick } from "../api/events";
+import { useBookingEvents, useDebouncedEventTick } from "../api/eventHooks";
 import { Countdown, UpcomingCountdown } from "../components/Countdown";
 import { EventLog } from "../components/EventLog";
 import { NotificationDot } from "../components/NotificationDot";
 import { OdometerNumber } from "../components/OdometerNumber";
 import { Pagination } from "../components/Pagination";
 import { StatusIndicator } from "../components/StatusIndicator";
-import { formatSlotLabel } from "../components/booking/SlotPicker";
+import { formatSlotLabel } from "../components/booking/formatSlotLabel";
 import { AddServiceForm } from "../components/station/AddServiceForm";
 import { AdditionalWorkPanel } from "../components/station/AdditionalWorkPanel";
 import { ArchiveTable } from "../components/station/ArchiveTable";
