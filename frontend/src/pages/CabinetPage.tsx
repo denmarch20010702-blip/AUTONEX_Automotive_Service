@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
+  confirmParked,
   declineTireStorageOffer,
   deleteCar,
   deleteClient,
@@ -12,6 +13,7 @@ import {
   listArchive,
   listBookings,
   listCars,
+  listParkingSpots,
   listTireSetArchive,
   listTireSets,
   storeTireSet,
@@ -23,6 +25,7 @@ import {
   type CarInfo,
   type ClientInfo,
   type MaintenanceSuggestion,
+  type ParkingSpot,
   type TireSet,
   type TireSetArchiveEntry,
 } from "../api/client";
@@ -185,6 +188,101 @@ function TireStorageStatusRow({ car, activeSet }: { car: CarInfo; activeSet: Tir
       </td>
     </tr>
   );
+}
+
+// C7 (buisness.md, "Smart Parking Management", 2026-09-17): клиент сам
+// подтверждает приезд из кабинета ("Ставит автомобиль на один из свободных
+// парковочных слотов. В личном кабинете подтверждает что машина на месте")
+// — до этого подтверждения выезд на пост не наступит автоматически, даже
+// когда придёт время визита (см. app/services/parking.py). Когда заявка
+// готова, тот же принцип для другой стороны: клиент сам подтверждает, что
+// забрал машину — это и есть момент, когда начисляются деньги (buisness.md:
+// "клиент нажимает кнопку... после чего... начисляются деньги").
+function ParkingAction({
+  booking,
+  parkingSpots,
+  onChanged,
+  onError,
+}: {
+  booking: Booking;
+  parkingSpots: ParkingSpot[];
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const spotName = booking.parking_spot_id
+    ? parkingSpots.find((s) => s.id === booking.parking_spot_id)?.name ?? `место №${booking.parking_spot_id}`
+    : null;
+
+  const park = async () => {
+    setBusy(true);
+    try {
+      await confirmParked(booking.id);
+      onChanged();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pickup = async () => {
+    if (!window.confirm("Подтвердить, что вы забрали автомобиль? После этого начислится оплата.")) return;
+    setBusy(true);
+    try {
+      await updateBookingStatus(booking.id, "issued");
+      onChanged();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (booking.status === "accepted") {
+    if (booking.parking_spot_id === null) {
+      return (
+        <button type="button" className="action-button" disabled={busy} onClick={park}>
+          Я приехал, машина на парковке
+        </button>
+      );
+    }
+    return (
+      <span style={{ color: "var(--color-muted)" }}>
+        На парковке ({spotName}) — ждём начала обслуживания
+      </span>
+    );
+  }
+
+  // Найдено пользователем на практике (2026-09-17): пока клиент решает по
+  // доп. работе (см. колонку "Доп. работы" в этой же строке), машина
+  // физически должна где-то стоять на станции — иначе непонятно, где она,
+  // хотя пост уже визуально свободен. Здесь только статус, без действия —
+  // решение принимается кнопками "Принять"/"Отклонить" в доп. работах.
+  if (booking.status === "awaiting_approval") {
+    return (
+      <span style={{ color: "var(--color-muted)" }}>
+        {spotName
+          ? `Машина на парковке (${spotName}) — ждём вашего решения по доп. работам`
+          : "Ждём вашего решения по доп. работам ниже"}
+      </span>
+    );
+  }
+
+  if (booking.status === "ready") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+        <span style={{ color: "var(--color-primary-active)", fontWeight: 600 }}>
+          Машина готова{spotName ? ` (${spotName})` : ""} — можно забирать
+        </span>
+        <button type="button" className="action-button" disabled={busy} onClick={pickup}>
+          Забрал(а) автомобиль
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function EditableCarTile({
@@ -449,6 +547,13 @@ export function CabinetPage() {
   const [error, setError] = useState<string | null>(null);
   const [addingCar, setAddingCar] = useState(false);
   const reloadTick = useDebouncedEventTick();
+  // C7 (buisness.md, "Smart Parking Management") — фиксированный справочник
+  // из 6 мест, не меняется, достаточно загрузить один раз, а не гонять
+  // внутри reload() на каждый SSE-тик.
+  const [parkingSpots, setParkingSpots] = useState<ParkingSpot[]>([]);
+  useEffect(() => {
+    listParkingSpots().then(setParkingSpots).catch(() => {});
+  }, []);
 
   const reload = useCallback(() => {
     if (!client) return;
@@ -744,6 +849,12 @@ export function CabinetPage() {
                     </td>
                     <td>
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+                        <ParkingAction
+                          booking={b}
+                          parkingSpots={parkingSpots}
+                          onChanged={reload}
+                          onError={setError}
+                        />
                         <RescheduleControl booking={b} onRescheduled={reload} onError={setError} />
                         {CANCELLABLE.has(b.status) && (
                           <button
@@ -849,10 +960,18 @@ export function CabinetPage() {
                         <td>
                           <StatusIndicator status={entry.status} />
                         </td>
-                        {/* Сумма реально оплачена только за выданные заявки —
-                            см. тот же фикс в ArchiveTable.tsx (станция);
-                            включает согласованные доп. работы (п.14). */}
-                        <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
+                        <td>
+                          {entry.status === "issued" ? (
+                            <>
+                              {entry.total_price} ₽
+                              {Number(entry.parking_surcharge) > 0 && (
+                                <small className="price-breakdown">
+                                  Услуги {entry.service_price} ₽ + парковка {entry.parking_surcharge} ₽
+                                </small>
+                              )}
+                            </>
+                          ) : "—"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

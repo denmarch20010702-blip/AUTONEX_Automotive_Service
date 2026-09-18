@@ -25,6 +25,16 @@ export interface Booking {
   // UI_description.md п.47: клиент уже ответил "не хранить" на вопрос про
   // сезонную замену — не спрашивать повторно в рамках этого же визита.
   tire_offer_declined: boolean;
+  // C7 (buisness.md, "Smart Parking Management") — место ожидания либо ДО
+  // обслуживания (клиент подтвердил приезд, ждёт start_at), либо ПОСЛЕ
+  // (заявка готова, ждёт, чтобы забрали).
+  parking_spot_id: number | null;
+  parked_at: string | null;
+}
+
+export interface ParkingSpot {
+  id: number;
+  name: string;
 }
 
 export interface SlotOption {
@@ -165,6 +175,17 @@ export function declineTireStorageOffer(bookingId: number): Promise<Booking> {
   });
 }
 
+// C7 (buisness.md, "Smart Parking Management"): клиент подтверждает из
+// личного кабинета, что машина физически стоит на парковке — до этого
+// автоматический выезд на пост не наступит, даже когда придёт время визита.
+export function confirmParked(bookingId: number): Promise<Booking> {
+  return request<Booking>(`/bookings/${bookingId}/park`, { method: "POST" });
+}
+
+export function listParkingSpots(): Promise<ParkingSpot[]> {
+  return request<ParkingSpot[]>("/parking-spots");
+}
+
 // B4: перенос заявки на новое время (тот же набор услуг и машина) — только
 // пока заявка ещё не принята на пост.
 export function rescheduleBooking(bookingId: number, startAtIso: string): Promise<Booking> {
@@ -189,6 +210,24 @@ export function getStationStats(): Promise<StationStats> {
   return request<StationStats>("/station/stats");
 }
 
+// C7 (buisness.md): "тариф который можно менять в личном кабинете станции".
+export interface StationSettings {
+  parking_overdue_rate_per_minute: string;
+}
+
+export function getStationSettings(): Promise<StationSettings> {
+  return request<StationSettings>("/station/settings");
+}
+
+export function updateStationSettings(
+  payload: Partial<StationSettings>,
+): Promise<StationSettings> {
+  return request<StationSettings>("/station/settings", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 // UI_description.md п.22: количество заявок, реально ждущих решения
 // станции (accepted -> принять на пост, ready -> выдать) — на этом
 // держится красная точка у "Станция" в шапке.
@@ -211,6 +250,9 @@ export interface ArchivedBooking {
   end_at: string;
   status: string;
   total_price: string;
+  service_price: string;
+  parking_surcharge: string;
+  parking_wait_minutes: number;
   services_snapshot: Array<{ id: number; name: string; price: string; duration_minutes: number }>;
   additional_works_snapshot: Array<{ id: number; description: string; price: string; proposed_by: string; status: string }>;
   created_at: string;

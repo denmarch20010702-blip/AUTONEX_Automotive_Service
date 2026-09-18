@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  getStationSettings,
   getStationStats,
   listAllCars,
   listAllClients,
   listArchive,
   listBookings,
+  listParkingSpots,
   listServices,
   listTireSetArchive,
   listTireSets,
+  updateStationSettings,
   type ArchivedBooking,
   type Booking,
   type CarInfo,
   type ClientInfo,
+  type ParkingSpot,
   type Service,
+  type StationSettings,
   type StationStats,
   type TireSet,
   type TireSetArchiveEntry,
@@ -31,6 +36,7 @@ import { AdditionalWorkPanel } from "../components/station/AdditionalWorkPanel";
 import { ArchiveTable } from "../components/station/ArchiveTable";
 import { BookingActions } from "../components/station/BookingActions";
 import { EditableServiceTile } from "../components/station/EditableServiceTile";
+import { ParkingBoard } from "../components/station/ParkingBoard";
 import { PostsBoard } from "../components/station/PostsBoard";
 import { TireSetArchiveTable } from "../components/TireSetArchiveTable";
 
@@ -54,6 +60,46 @@ function isTodayUtc(startAtIso: string): boolean {
   );
 }
 
+// buisness.md (C7, "Smart Parking Management"): "тариф который можно
+// менять в личном кабинете станции" — простая форма с одним полем, тот же
+// стиль, что и у остальных редактируемых форм проекта (EditableServiceTile).
+function StationSettingsForm({
+  settings,
+  onSaved,
+  onError,
+}: {
+  settings: StationSettings;
+  onSaved: (settings: StationSettings) => void;
+  onError: (message: string) => void;
+}) {
+  const [rate, setRate] = useState(settings.parking_overdue_rate_per_minute);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const updated = await updateStationSettings({ parking_overdue_rate_per_minute: rate });
+      onSaved(updated);
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="form-field" style={{ maxWidth: 320 }}>
+      <label>Наценка за простой на парковке, ₽/мин сверх 2 бесплатных часов</label>
+      <div style={{ display: "flex", gap: "0.5rem" }}>
+        <input type="number" min={0} step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+        <button type="button" className="primary-button" disabled={busy} onClick={save}>
+          Сохранить
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function StationPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [services, setServices] = useState<Service[] | null>(null);
@@ -74,6 +120,12 @@ export function StationPage() {
   // проекте (сутки по UTC, см. today_revenue в station.py), чтобы не вводить
   // ещё одну трактовку часового пояса.
   const [showTodayOnly, setShowTodayOnly] = useState(false);
+  // C7 (buisness.md, "Smart Parking Management") — parkingSpots — фиксированный
+  // справочник из 6 мест, загружается один раз (см. useEffect ниже);
+  // stationSettings — единственная редактируемая настройка станции сейчас
+  // (тариф наценки за простой), тоже своя загрузка/сохранение.
+  const [parkingSpots, setParkingSpots] = useState<ParkingSpot[]>([]);
+  const [stationSettings, setStationSettings] = useState<StationSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const events = useBookingEvents();
   const reloadTick = useDebouncedEventTick();
@@ -141,6 +193,8 @@ export function StationPage() {
     reloadClients();
     reloadTireSets();
     reloadTireArchive();
+    listParkingSpots().then(setParkingSpots).catch((err) => setError(err.message));
+    getStationSettings().then(setStationSettings).catch((err) => setError(err.message));
   }, [
     reloadBookings,
     reloadServices,
@@ -204,49 +258,61 @@ export function StationPage() {
         }}
       >
         <div style={{ color: "var(--color-muted)", fontSize: "0.85rem" }}>Заработано станцией</div>
-        <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>
-          {stats ? formatMoney(stats.total_revenue) : "…"}
+        {/* UI_description.md п.46 (2026-09-17): раньше "за всё время"/"за
+            сегодня" дублировались отдельной карточкой в станционной строке
+            метрик ниже — то же самое число дважды на экране. Обе цифры
+            теперь только здесь, в главном верхнем счётчике. */}
+        <div style={{ display: "flex", justifyContent: "center", gap: "2.5rem", flexWrap: "wrap", marginTop: "0.2rem" }}>
+          <div>
+            <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>
+              <OdometerNumber value={stats ? formatMoney(stats.total_revenue) : "…"} />
+            </div>
+            <div style={{ fontSize: "0.72rem", color: "var(--color-muted)" }}>за всё время</div>
+          </div>
+          <div>
+            <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>
+              <OdometerNumber value={stats ? formatMoney(stats.today_revenue) : "…"} />
+            </div>
+            <div style={{ fontSize: "0.72rem", color: "var(--color-muted)" }}>за сегодня</div>
+          </div>
         </div>
       </div>
 
-      {/* UI_description.md п.45 — компактная панель метрик под "Заработано
-          станцией", прижата к правому краю (тот же край, что у панелей
-          ниже). Заменяет прежние 4 счётчика очереди заявок (B7) — очередь
-          задач уже видна отдельно, в панели доп. работ у каждой заявки. */}
-      {stats && (
-        <div className="station-top-metrics">
-          <div className="station-top-metrics__card station-top-metrics__card--revenue">
-            <div className="station-top-metrics__row">
-              <span className="station-top-metrics__label">За всё время</span>
-              <OdometerNumber value={formatMoney(stats.total_revenue)} />
+      {/* buisness.md (C7, "Smart Parking Management", 2026-09-17): 6 мест
+          ожидания — одна строка над постами, слева от счётчиков метрик, тем
+          же приёмом индикации, что и посты, только меньшего размера. */}
+      <div className="station-top-row">
+        <ParkingBoard spots={parkingSpots} bookings={bookings ?? []} />
+
+        {/* UI_description.md п.45 — компактная панель метрик, прижата к
+            правому краю (тот же край, что у панелей ниже). Заменяет прежние
+            4 счётчика очереди заявок (B7) — очередь задач уже видна
+            отдельно, в панели доп. работ у каждой заявки. */}
+        {stats && (
+          <div className="station-top-metrics">
+            <div className="station-top-metrics__card">
+              <span className="station-top-metrics__value">
+                {stats.average_check !== null ? formatMoney(stats.average_check) : "—"}
+              </span>
+              <span className="station-top-metrics__label">Средний чек</span>
             </div>
-            <div className="station-top-metrics__row">
-              <span className="station-top-metrics__label">За сегодня</span>
-              <OdometerNumber value={formatMoney(stats.today_revenue)} />
+            <div className="station-top-metrics__card">
+              <span className="station-top-metrics__value">
+                {stats.completion_rate_percent !== null ? `${stats.completion_rate_percent}%` : "—"}
+              </span>
+              <span className="station-top-metrics__label">Выполнено vs отменено</span>
+            </div>
+            <div className="station-top-metrics__card">
+              <span className="station-top-metrics__value">
+                {stats.additional_work_conversion_percent !== null
+                  ? `${stats.additional_work_conversion_percent}%`
+                  : "—"}
+              </span>
+              <span className="station-top-metrics__label">Конверсия доп. работ</span>
             </div>
           </div>
-          <div className="station-top-metrics__card">
-            <span className="station-top-metrics__value">
-              {stats.average_check !== null ? formatMoney(stats.average_check) : "—"}
-            </span>
-            <span className="station-top-metrics__label">Средний чек</span>
-          </div>
-          <div className="station-top-metrics__card">
-            <span className="station-top-metrics__value">
-              {stats.completion_rate_percent !== null ? `${stats.completion_rate_percent}%` : "—"}
-            </span>
-            <span className="station-top-metrics__label">Выполнено vs отменено</span>
-          </div>
-          <div className="station-top-metrics__card">
-            <span className="station-top-metrics__value">
-              {stats.additional_work_conversion_percent !== null
-                ? `${stats.additional_work_conversion_percent}%`
-                : "—"}
-            </span>
-            <span className="station-top-metrics__label">Конверсия доп. работ</span>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <PostsBoard bookings={bookings ?? []} clients={clients} cars={cars} />
 
@@ -387,6 +453,18 @@ export function StationPage() {
           ))}
         </div>
         <AddServiceForm onCreated={(service) => setServices((prev) => [...(prev ?? []), service])} />
+      </div>
+
+      {/* buisness.md (C7, "Smart Parking Management"): "по тарифу который
+          можно менять в личном кабинете станции" — единственная сейчас
+          редактируемая настройка станции. */}
+      <div className="panel">
+        <div className="panel-header">
+          <h2>Настройки станции</h2>
+        </div>
+        {stationSettings && (
+          <StationSettingsForm settings={stationSettings} onSaved={setStationSettings} onError={setError} />
+        )}
       </div>
 
       {/* UI_description.md п.45: "журнал и журнал приёма и выдачи шин

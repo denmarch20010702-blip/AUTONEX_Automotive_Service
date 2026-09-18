@@ -7,16 +7,50 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
-from app.models import STATION_STATS_ROW_ID, Booking, BookingArchive, BookingStatus, StationStats
+from app.models import (
+    STATION_SETTINGS_ROW_ID,
+    Booking,
+    BookingArchive,
+    BookingStatus,
+    StationSettings,
+)
 from app.schemas.booking_archive import BookingArchiveRead
-from app.schemas.station import StationStatsRead
+from app.schemas.station import StationSettingsRead, StationSettingsUpdate, StationStatsRead
 
 router = APIRouter(prefix="/station", tags=["station"])
 
 
+@router.get("/settings", response_model=StationSettingsRead)
+async def get_station_settings(session: AsyncSession = Depends(get_session)) -> StationSettings:
+    return await session.get(StationSettings, STATION_SETTINGS_ROW_ID)
+
+
+@router.patch("/settings", response_model=StationSettingsRead)
+async def update_station_settings(
+    data: StationSettingsUpdate, session: AsyncSession = Depends(get_session)
+) -> StationSettings:
+    # C7 (buisness.md): "тариф который можно менять в личном кабинете
+    # станции" — единственная сейчас редактируемая настройка станции.
+    settings_row = await session.get(StationSettings, STATION_SETTINGS_ROW_ID)
+    for field, value in data.model_dump(exclude_unset=True, exclude_none=True).items():
+        setattr(settings_row, field, value)
+    await session.commit()
+    await session.refresh(settings_row)
+    return settings_row
+
+
 @router.get("/stats", response_model=StationStatsRead)
 async def get_station_stats(session: AsyncSession = Depends(get_session)) -> dict:
-    stats = await session.get(StationStats, STATION_STATS_ROW_ID)
+    # The archive is the immutable financial source of truth.  `station_stats`
+    # is retained only as a backwards-compatible cache; reading it here once
+    # allowed failed/old live-db test clean-up to display a negative revenue.
+    total_revenue = (
+        await session.execute(
+            select(func.coalesce(func.sum(BookingArchive.total_price), 0)).where(
+                BookingArchive.status == BookingStatus.ISSUED
+            )
+        )
+    ).scalar_one()
 
     # UI_description.md п.45 (2026-09-15): компактный счётчик в правом верхнем
     # углу — выручка "за сегодня" отдельно от "за всё время". Честное
@@ -78,7 +112,7 @@ async def get_station_stats(session: AsyncSession = Depends(get_session)) -> dic
     additional_work_conversion_percent = round(approved / answered * 100, 1) if answered > 0 else None
 
     return {
-        "total_revenue": stats.total_revenue,
+        "total_revenue": total_revenue,
         "today_revenue": today_revenue,
         "average_check": average_check,
         "issued_count": issued_count,

@@ -40,12 +40,20 @@ export function ArchiveTable({ entries }: { entries: ArchivedBooking[] }) {
               <td>
                 <StatusIndicator status={entry.status} />
               </td>
-              {/* Сумма реально оплачена только за выданные заявки (issued
-                  кредитует StationStats) — для отменённых показывать сумму
-                  рядом с красным индикатором вводит в заблуждение, будто
-                  деньги были получены. Найдено на практике 2026-09-13. Сумма
-                  включает согласованные доп. работы сверх услуги (п.14). */}
-              <td>{entry.status === "issued" ? `${entry.total_price} ₽` : "—"}</td>
+              {/* Показываем расшифровку наценки парковки: общая сумма остаётся
+                  компактной, но оператор может проверить, откуда она взялась. */}
+              <td>
+                {entry.status === "issued" ? (
+                  <>
+                    {entry.total_price} ₽
+                    {Number(entry.parking_surcharge) > 0 && (
+                      <small className="price-breakdown">
+                        Услуги {entry.service_price} ₽ + парковка {entry.parking_surcharge} ₽
+                      </small>
+                    )}
+                  </>
+                ) : "—"}
+              </td>
               <td>{new Date(entry.archived_at).toLocaleString()}</td>
             </tr>
           ))}

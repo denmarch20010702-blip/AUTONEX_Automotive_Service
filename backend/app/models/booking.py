@@ -70,9 +70,37 @@ class Booking(Base):
     # не задавать вопрос повторно за ЭТОТ же визит (см. app/api/tire_sets.py).
     tire_offer_declined: Mapped[bool] = mapped_column(default=False, server_default="false")
 
+    # C7 (buisness.md, "Smart Parking Management", 2026-09-17): машина ждёт
+    # на одном из 6 мест в ЛЮБОЙ момент, когда она не на посту, но заявка ещё
+    # не отпущена клиенту — до первого приёма на обслуживание, между
+    # раундами (пока клиент решает по доп. работе), и после готовности (см.
+    # app/services/parking.py). Одно и то же поле для всех этих пауз —
+    # заявка не может ждать на парковке и одновременно быть на посту, места
+    # переиспользуются между паузами так же, как посты между заявками.
+    #
+    # Найдено пользователем на практике (2026-09-17): если место назначать
+    # только в момент готовности заявки, а не сразу по входу в "ожидает
+    # согласования", машина в этом промежутке физически "нигде" — пост уже
+    # визуально свободен (расчётный интервал истёк), а место ожидания ещё
+    # не занято, хотя реального свободного места для неё на станции нет.
+    parking_spot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parking_spots.id"), nullable=True, index=True
+    )
+    # Момент входа в ТЕКУЩУЮ паузу на парковке — сбрасывается на новое
+    # значение при следующей паузе (см. parking.py::leave_parking).
+    parked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Суммарная длительность ВСЕХ уже завершённых пауз на парковке этой
+    # заявки (в минутах) — накапливается при каждом выезде с парковки на
+    # пост (см. leave_parking), потому что `parked_at` тут же перезаписывается
+    # под следующую паузу и прежнее значение иначе терялось бы. Текущая (ещё
+    # не завершённая) пауза добавляется отдельно при расчёте наценки в
+    # момент выдачи (см. compute_parking_surcharge).
+    parking_wait_minutes: Mapped[int] = mapped_column(default=0, server_default="0")
+
     client: Mapped["Client"] = relationship(back_populates="bookings")
     car: Mapped["Car"] = relationship(back_populates="bookings")
     post: Mapped["Post"] = relationship(back_populates="bookings")
+    parking_spot: Mapped["ParkingSpot | None"] = relationship()
     services: Mapped[list["Service"]] = relationship(
         secondary=booking_services, back_populates="bookings"
     )

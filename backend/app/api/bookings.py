@@ -30,6 +30,13 @@ from app.schemas.booking import BookingCreate, BookingReschedule, BookingRead, B
 from app.services.ai_diagnostics import run_ai_diagnostic
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
+from app.services.parking import (
+    compute_parking_surcharge,
+    confirm_parked_before_service,
+    ensure_waiting_spot,
+    leave_parking,
+    total_parking_wait_minutes,
+)
 from app.services.robot_timer import notify_car_ready, schedule_auto_advance
 from app.services.slots import (
     car_is_free,
@@ -380,6 +387,32 @@ async def update_booking_status(
     if data.status == BookingStatus.READY and previous_status != BookingStatus.READY:
         await notify_car_ready(session, booking)
 
+    # C7 (buisness.md, "Smart Parking Management", 2026-09-17): готовая
+    # машина сама переезжает на свободное место ожидания — тот же ручной
+    # путь ("Готово" на станции) и та же проверка "уже не назначено", что и
+    # у автоматического пути в robot_timer.py::resolve_next_step. Если
+    # свободных мест прямо сейчас нет — не блокирует ничего, sweep
+    # (parking.py::run_parking_sweep) сам найдёт место позже.
+    #
+    # Найдено пользователем на практике (2026-09-17): то же самое нужно и
+    # для "ожидает согласования" — пока клиент решает по доп. работе, машина
+    # физически должна где-то стоять на станции, а не "нигде" (пост уже
+    # визуально свободен по расчётному интервалу, а место ожидания раньше
+    # назначалось только при готовности). Если решение — продолжить работу
+    # и место есть на посту, машина съезжает с этого же места обратно на
+    # пост (см. ON_POST-ветку ниже и resolve_next_step в robot_timer.py);
+    # если решение — отклонить или перенести на отдельный визит, заявка
+    # просто остаётся на том же месте до готовности, никакого повторного
+    # назначения не нужно.
+    await ensure_waiting_spot(session, booking)
+
+    # C7: машина съезжает с парковки на пост — фиксирует, сколько реально
+    # прождала (см. leave_parking) и освобождает место. Тихий no-op, если
+    # заявку приняли по старинке, без подтверждения приезда клиентом из
+    # кабинета (parking_spot_id всё равно None).
+    if data.status == BookingStatus.ON_POST:
+        leave_parking(booking)
+
     # UI_description.md п.11: таймер до завершения должен быть виден и
     # станции, и клиенту — точку отсчёта фиксируем на самой заявке в момент
     # приёма на пост (тот же момент, что запускает автотаймер ниже), а не
@@ -428,7 +461,9 @@ async def update_booking_status(
         snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
 
         if archiving:
-            total = sum((service.price for service in booking.services), start=Decimal("0"))
+            service_total = sum((service.price for service in booking.services), start=Decimal("0"))
+            parking_surcharge = Decimal("0")
+            parking_wait_minutes = 0
 
             # additional_works имеет FK на bookings без каскада — без явного
             # удаления его строк здесь DELETE FROM bookings падал с
@@ -472,7 +507,7 @@ async def update_booking_status(
                 # же сумма начислится ЕЩЁ РАЗ (через total_price его
                 # собственной услуги), то есть без этого фильтра деньги
                 # задваивались бы.
-                total += sum(
+                service_total += sum(
                     (
                         w.price
                         for w in additional_works
@@ -480,6 +515,13 @@ async def update_booking_status(
                     ),
                     start=Decimal("0"),
                 )
+                # C7 (buisness.md, "Smart Parking Management"): наценка за
+                # простой сверх 2 бесплатных часов (обе фазы парковки —
+                # до и после обслуживания — суммарно), пока `parked_at`
+                # заявки ещё существует (до архивации/удаления ниже).
+                parking_wait_minutes = total_parking_wait_minutes(booking)
+                parking_surcharge = await compute_parking_surcharge(session, parking_wait_minutes)
+                total = service_total + parking_surcharge
                 await session.execute(
                     update(StationStats)
                     .where(StationStats.id == STATION_STATS_ROW_ID)
@@ -494,6 +536,8 @@ async def update_booking_status(
                 # B5: пробег на момент ЭТОГО ТО — основа для расчёта "пробег с
                 # последнего ТО" в проактивном предложении записи.
                 booking.car.mileage_at_last_service = booking.car.mileage
+            else:
+                total = service_total
             session.add(
                 BookingArchive(
                     original_booking_id=booking.id,
@@ -508,6 +552,9 @@ async def update_booking_status(
                     end_at=booking.end_at,
                     status=booking.status,
                     total_price=total,
+                    service_price=service_total,
+                    parking_surcharge=parking_surcharge,
+                    parking_wait_minutes=parking_wait_minutes,
                     services_snapshot=[
                         {
                             "id": s.id,
@@ -588,3 +635,31 @@ async def decline_tire_storage_offer(
     await session.commit()
     await session.refresh(booking)
     return BookingRead.model_validate(booking)
+
+
+@router.post("/{booking_id}/park", response_model=BookingRead)
+async def confirm_parked(
+    booking_id: int, session: AsyncSession = Depends(get_session)
+) -> BookingRead:
+    """C7 (buisness.md, "Smart Parking Management", 2026-09-17): клиент из
+    личного кабинета подтверждает, что машина физически стоит на одном из
+    свободных парковочных мест — до этого подтверждения приём на пост не
+    может произойти автоматически (см. app/services/parking.py::
+    run_parking_sweep), даже если назначенное время уже подошло. Станция
+    всё ещё может принять машину на пост вручную по старинке, минуя эту
+    ручку — тот же принцип "ручной путь остаётся, пока автоматика не
+    покрывает всё", что и у остальных шагов проекта."""
+    try:
+        booking = await confirm_parked_before_service(session, booking_id)
+    except ValueError as exc:
+        detail = {
+            "booking_not_found": "Заявка не найдена",
+            "wrong_status": "Подтвердить приезд можно только для принятой, но ещё не начатой заявки",
+            "already_parked": "Машина уже отмечена как стоящая на парковке",
+            "no_free_spot": "Свободных мест на парковке сейчас нет — попробуйте чуть позже",
+        }.get(str(exc), "Не удалось подтвердить приезд")
+        status_code = 404 if str(exc) == "booking_not_found" else 409
+        raise HTTPException(status_code=status_code, detail=detail)
+    snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
+    publish("booking_status_changed", snapshot)
+    return BookingRead(**snapshot)

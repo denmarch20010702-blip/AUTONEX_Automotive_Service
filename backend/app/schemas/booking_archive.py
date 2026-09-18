@@ -24,6 +24,9 @@ class BookingArchiveRead(BaseModel):
     end_at: datetime
     status: BookingStatus
     total_price: Decimal
+    service_price: Decimal
+    parking_surcharge: Decimal
+    parking_wait_minutes: int
     services_snapshot: list[dict]
     additional_works_snapshot: list[dict]
     created_at: datetime

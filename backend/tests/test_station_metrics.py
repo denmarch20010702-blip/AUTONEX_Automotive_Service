@@ -16,7 +16,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import update
 
 from app.db.session import async_session
-from app.models import BookingArchive, BookingStatus
+from app.models import STATION_STATS_ROW_ID, BookingArchive, BookingStatus, StationStats
 
 
 def unique_email() -> str:
@@ -83,10 +83,10 @@ async def test_today_revenue_excludes_older_issued_bookings(client: AsyncClient)
             delta_total = Decimal(str(after["total_revenue"])) - Decimal(str(before["total_revenue"]))
             # Старая запись (2 дня назад) не в "сегодня" — только новая.
             assert delta_today == Decimal("300.00")
-            # total_revenue — отдельный счётчик StationStats, не пересчитывается
-            # из архива синтетическими вставками ниже него — не должен был
-            # шевельнуться от прямой вставки в booking_archive в обход API.
-            assert delta_total == Decimal("0.00")
+            # Общая выручка, как и "сегодня", считается из неизменяемого
+            # архива выданных машин. Это защищает UI от испорченного legacy-
+            # счётчика StationStats и делает прямую вставку видимой честно.
+            assert delta_total == Decimal("300.00")
         finally:
             await delete_archive_row(new_id)
     finally:
@@ -156,3 +156,22 @@ async def test_metrics_are_none_when_no_archive_history(client: AsyncClient) -> 
     assert stats["average_check"] is None
     assert stats["completion_rate_percent"] is None
     assert stats["additional_work_conversion_percent"] is None
+
+
+@pytest.mark.asyncio
+async def test_total_revenue_ignores_corrupted_legacy_counter(client: AsyncClient) -> None:
+    """Regression for the negative-revenue incident from live-db tests."""
+    before = Decimal(str((await client.get("/station/stats")).json()["total_revenue"]))
+    async with async_session() as session:
+        legacy_counter = await session.get(StationStats, STATION_STATS_ROW_ID)
+        original_value = legacy_counter.total_revenue
+        legacy_counter.total_revenue = Decimal("-999999.99")
+        await session.commit()
+    try:
+        after = Decimal(str((await client.get("/station/stats")).json()["total_revenue"]))
+        assert after == before
+    finally:
+        async with async_session() as session:
+            legacy_counter = await session.get(StationStats, STATION_STATS_ROW_ID)
+            legacy_counter.total_revenue = original_value
+            await session.commit()

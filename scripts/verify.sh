@@ -3,11 +3,8 @@
 # Запускать из корня репозитория: bash scripts/verify.sh [--full]
 #
 #   без флагов  — быстрые неразрушающие проверки (можно гонять когда угодно)
-#   --full      — дополнительно прогоняет полный откат схемы БД до пустой
-#                 и накат обратно. Стирает все данные в БД. Безопасно сейчас
-#                 (реальных данных ещё нет, только схема), но станет опасно
-#                 после того как в БД появятся настоящие записи — тогда этот
-#                 флаг использовать только на тестовой копии БД.
+#   --full      — дополнительно прогоняет полный откат схемы тестовой БД до
+#                 пустой и накат обратно. Живая БД `db` не меняется.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,23 +22,23 @@ code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5173)
 [ "$code" = "200" ] && echo "200 — OK" || { echo "FAIL: frontend вернул $code"; exit 1; }
 
 echo
-echo "== 4. Цепочка миграций без ветвления (одна head) =="
-docker compose exec -T backend alembic heads
+echo "== 4. Цепочка миграций без ветвления (одна head, изолированная БД) =="
+docker compose --profile test run --rm backend_test alembic heads
 
 echo
-echo "== 5. Модели и реальная БД не разошлись (alembic check) =="
-docker compose exec -T backend alembic check
+echo "== 5. Модели и тестовая БД не разошлись (alembic check) =="
+docker compose --profile test run --rm backend_test alembic check
 
 echo
-echo "== 6. Тесты backend =="
-docker compose exec -T backend pytest -q
+echo "== 6. Тесты backend в db_test =="
+docker compose --profile test run --rm backend_test pytest -q
 
 if [ "${1:-}" = "--full" ]; then
   echo
-  echo "== 7. [--full] Полный цикл downgrade base -> upgrade head (СТИРАЕТ ДАННЫЕ В БД) =="
-  docker compose exec -T backend alembic downgrade base
-  docker compose exec -T backend alembic upgrade head
-  echo "Цикл прошёл без ошибок — миграции реверсивны и консистентны."
+  echo "== 7. [--full] Полный цикл test DB: downgrade base -> upgrade head =="
+  docker compose --profile test run --rm backend_test alembic downgrade base
+  docker compose --profile test run --rm backend_test alembic upgrade head
+  echo "Цикл прошёл без ошибок — миграции реверсивны и изолированы от живых данных."
 fi
 
 echo

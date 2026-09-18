@@ -11,10 +11,12 @@ from app.api import (
     clients,
     events,
     health,
+    parking_spots,
     station,
     tire_sets,
 )
 from app.services.overdue_bookings import schedule_overdue_sweep
+from app.services.parking import schedule_parking_sweep
 from app.services.reminders import schedule_reminder_sweep
 from app.services.robot_timer import schedule_stalled_on_post_sweep, scheduler
 from app.services.tire_season_reminders import schedule_tire_season_sweep
@@ -30,6 +32,11 @@ async def lifespan(app: FastAPI):
     # во время `on_post` теряет его безвозвратно. Этот sweep "дособирает"
     # такие заявки (см. robot_timer.py) — тот же приём, что и overdue_bookings.
     schedule_stalled_on_post_sweep(scheduler)
+    # C7 (buisness.md, "Smart Parking Management"): сам принимает на пост
+    # подтвердивших приезд клиентов, когда наступает время, и сам повторяет
+    # попытку занять место на парковке для уже готовых заявок, если мест не
+    # было в момент готовности (см. app/services/parking.py).
+    schedule_parking_sweep(scheduler)
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)
@@ -53,3 +60,4 @@ app.include_router(events.router)
 app.include_router(station.router)
 app.include_router(tire_sets.router)
 app.include_router(additional_works.router)
+app.include_router(parking_spots.router)

@@ -46,4 +46,9 @@ class BookingRead(BaseModel):
     # UI_description.md п.47: клиент отклонил предложение сдать шины во
     # время визита на "Сезонная замена шин" — прячет вопрос в кабинете.
     tire_offer_declined: bool = False
+    # C7 (buisness.md, "Smart Parking Management"): место ожидания — либо
+    # ДО обслуживания (клиент подтвердил приезд, ждёт своего start_at), либо
+    # ПОСЛЕ (заявка готова, ждёт, чтобы забрали) — см. app/services/parking.py.
+    parking_spot_id: int | None = None
+    parked_at: datetime | None = None
     services: list[ServiceRead] = []

@@ -504,6 +504,109 @@ async def test_approve_without_room_offers_separate_visit_via_schedule(client: A
 
 
 @pytest.mark.asyncio
+async def test_schedule_separate_visit_advances_booking_stuck_in_awaiting_approval(
+    client: AsyncClient,
+) -> None:
+    # Найденный пользователем реальный баг (2026-09-17): в отличие от
+    # обычного "принять/отклонить" (respond_additional_work), перенос доп.
+    # работы на отдельный визит (/schedule) не проверял, осталось ли что-то
+    # ещё неотвеченное — если перенесённая работа была ПОСЛЕДНЕЙ pending, а
+    # заявка на момент переноса была именно 'awaiting_approval' (не 'ready',
+    # как в тесте выше, где статус выставлен ВРУЧНУЮ до предложения) — она
+    # навсегда застревала в 'awaiting_approval', хотя по факту уже ничего
+    # не ждёт: сама услуга готова, а доп. работа уедет отдельным визитом.
+    from app.db.session import async_session
+    from app.models import Booking, BookingStatus
+    from app.services.robot_timer import _auto_advance
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 342)
+    extra_id = await make_extra_service(client, price="300.00", duration_minutes=45)
+    other_client_id = other_car_id = blocking_id = scheduled_id = None
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        booking = resp.json()
+        post_id = booking["post_id"]
+        end_at = datetime.fromisoformat(booking["end_at"].replace("Z", "+00:00"))
+
+        # Предлагаем доп. работу, пока машина ЕЩЁ на посту — основной таймер
+        # (см. ниже) сработает позже и застанет предложение неотвеченным.
+        work = (await propose(client, booking_id, extra_id)).json()
+
+        other_client_resp = await client.post(
+            "/clients", json={"email": unique_email(), "name": "AW Blocker 2"}
+        )
+        other_client_id = other_client_resp.json()["id"]
+        other_car_resp = await client.post(
+            "/cars", json={"client_id": other_client_id, "make": "Kia", "model": "Rio"}
+        )
+        other_car_id = other_car_resp.json()["id"]
+
+        # Реальная заявка на ТОТ ЖЕ пост сразу после конца основной услуги —
+        # имитирует "мест для доп. работы сейчас нет".
+        async with async_session() as session:
+            blocking = Booking(
+                client_id=other_client_id,
+                car_id=other_car_id,
+                post_id=post_id,
+                start_at=end_at,
+                end_at=end_at + timedelta(minutes=30),
+                status=BookingStatus.ACCEPTED,
+            )
+            session.add(blocking)
+            await session.commit()
+            await session.refresh(blocking)
+            blocking_id = blocking.id
+
+        # Основной таймер сам доводит заявку до 'awaiting_approval' — НЕ
+        # 'ready' вручную, как в тесте выше. Именно эта комбинация статуса
+        # ('awaiting_approval') раньше не продвигалась дальше после /schedule.
+        await _auto_advance(booking_id)
+        booking_now = (await client.get(f"/bookings/{booking_id}")).json()
+        assert booking_now["status"] == "awaiting_approval"
+
+        resp = await client.post(f"/additional-works/{work['id']}/respond", json={"status": "approved"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["needs_separate_visit"] is True
+
+        day = date.today() + timedelta(days=343)
+        window_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
+        slot = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [extra_id], "date": window_start},
+            )
+        ).json()[0]
+
+        resp = await client.post(
+            f"/additional-works/{work['id']}/schedule", json={"start_at": slot["start_at"]}
+        )
+        assert resp.status_code == 200
+        scheduled_id = resp.json()["scheduled_booking_id"]
+        assert scheduled_id is not None
+
+        # Главная проверка фикса: исходная заявка САМА уехала дальше, а не
+        # осталась висеть в 'awaiting_approval'.
+        original_after = (await client.get(f"/bookings/{booking_id}")).json()
+        assert original_after["status"] == "ready"
+    finally:
+        await cleanup(
+            client,
+            booking_id=booking_id,
+            car_id=car_id,
+            client_id=client_id,
+            service_id=service_id,
+            extra_service_ids=[extra_id],
+            extra_booking_ids=[b for b in (blocking_id, scheduled_id) if b],
+        )
+        if other_car_id:
+            await client.delete(f"/cars/{other_car_id}")
+        if other_client_id:
+            await client.delete(f"/clients/{other_client_id}")
+
+
+@pytest.mark.asyncio
 async def test_approve_while_still_on_post_with_queued_next_booking_offers_separate_visit(
     client: AsyncClient,
 ) -> None:
@@ -692,6 +795,90 @@ async def test_schedule_batch_combines_multiple_works_into_one_visit(client: Asy
             client_id=client_id,
             service_id=service_id,
             extra_service_ids=[extra_a, extra_b],
+            extra_booking_ids=[b for b in (blocking_id, scheduled_id) if b],
+        )
+        if other_car_id:
+            await client.delete(f"/cars/{other_car_id}")
+        if other_client_id:
+            await client.delete(f"/clients/{other_client_id}")
+
+
+@pytest.mark.asyncio
+async def test_schedule_batch_also_advances_booking_stuck_in_awaiting_approval(client: AsyncClient) -> None:
+    # Тот же фикс, что и в test_schedule_separate_visit_advances_booking_
+    # stuck_in_awaiting_approval выше, но через batch-эндпоинт
+    # (/schedule-batch) — он тоже не проверял remaining_pending до фикса.
+    from app.db.session import async_session
+    from app.models import Booking, BookingStatus
+    from app.services.robot_timer import _auto_advance
+
+    client_id, car_id, service_id, booking_id = await make_booking(client, 344)
+    extra_id = await make_extra_service(client, price="300.00", duration_minutes=45)
+    other_client_id = other_car_id = blocking_id = scheduled_id = None
+    try:
+        await make_startable_now(booking_id)
+        resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
+        assert resp.status_code == 200
+        booking = resp.json()
+        post_id = booking["post_id"]
+        end_at = datetime.fromisoformat(booking["end_at"].replace("Z", "+00:00"))
+
+        work = (await propose(client, booking_id, extra_id)).json()
+
+        other_client_resp = await client.post(
+            "/clients", json={"email": unique_email(), "name": "AW Batch Blocker 2"}
+        )
+        other_client_id = other_client_resp.json()["id"]
+        other_car_resp = await client.post(
+            "/cars", json={"client_id": other_client_id, "make": "Kia", "model": "Rio"}
+        )
+        other_car_id = other_car_resp.json()["id"]
+
+        async with async_session() as session:
+            blocking = Booking(
+                client_id=other_client_id,
+                car_id=other_car_id,
+                post_id=post_id,
+                start_at=end_at,
+                end_at=end_at + timedelta(minutes=30),
+                status=BookingStatus.ACCEPTED,
+            )
+            session.add(blocking)
+            await session.commit()
+            await session.refresh(blocking)
+            blocking_id = blocking.id
+
+        await _auto_advance(booking_id)
+        booking_now = (await client.get(f"/bookings/{booking_id}")).json()
+        assert booking_now["status"] == "awaiting_approval"
+
+        day = date.today() + timedelta(days=345)
+        window_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
+        slot = (
+            await client.get(
+                "/bookings/available-slots",
+                params={"service_ids": [extra_id], "date": window_start},
+            )
+        ).json()[0]
+
+        resp = await client.post(
+            "/additional-works/schedule-batch",
+            json={"work_ids": [work["id"]], "start_at": slot["start_at"]},
+        )
+        assert resp.status_code == 200
+        scheduled_id = resp.json()[0]["scheduled_booking_id"]
+        assert scheduled_id is not None
+
+        original_after = (await client.get(f"/bookings/{booking_id}")).json()
+        assert original_after["status"] == "ready"
+    finally:
+        await cleanup(
+            client,
+            booking_id=booking_id,
+            car_id=car_id,
+            client_id=client_id,
+            service_id=service_id,
+            extra_service_ids=[extra_id],
             extra_booking_ids=[b for b in (blocking_id, scheduled_id) if b],
         )
         if other_car_id:

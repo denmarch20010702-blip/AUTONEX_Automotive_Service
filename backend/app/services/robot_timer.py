@@ -13,6 +13,7 @@ from app.models import AdditionalWork, AdditionalWorkStatus, Booking, BookingSta
 from app.schemas.booking import BookingRead
 from app.services.events import publish
 from app.services.outbox_email import send_stub_email
+from app.services.parking import ensure_waiting_spot, leave_parking
 
 # Заметка пользователя (2026-09-13): после приёма машины на пост
 # обслуживание должно самостоятельно идти по таймеру — длительность равна
@@ -90,6 +91,13 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
     if has_pending is not None:
         # Неотвеченное предложение — дальше не едем, ждём клиента (B2).
         booking.status = BookingStatus.AWAITING_APPROVAL
+        # C7 (buisness.md, "Smart Parking Management", 2026-09-17): найдено
+        # пользователем на практике — пока клиент решает по доп. работе,
+        # машина физически должна где-то стоять на станции (пост уже
+        # визуально свободен по расчётному интервалу), а не "нигде". Если
+        # мест нет прямо сейчас — не блокирует ничего, run_parking_sweep сам
+        # повторит попытку позже (см. app/services/parking.py).
+        await ensure_waiting_spot(session, booking)
         return
 
     # Одобренные, но ещё не отработанные доп. работы — едем на пост ещё раз,
@@ -115,6 +123,12 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
     if extra_minutes > 0:
         for w in newly_approved:
             w.execution_started = True
+        # C7: клиент согласился отработать доп. работу, и на неё нашлось
+        # место на посту — машина съезжает с парковки обратно на пост (та
+        # же функция, что и на первом заезде, см. app/api/bookings.py) —
+        # без этого место осталось бы занятым навечно, хотя заявка уже не
+        # ждёт на парковке, а снова работает.
+        leave_parking(booking)
         booking.status = BookingStatus.ON_POST
         now = datetime.now(timezone.utc)
         new_ends_at = now + timedelta(minutes=extra_minutes)
@@ -142,6 +156,12 @@ async def resolve_next_step(session: AsyncSession, booking: Booking) -> None:
     booking.status = BookingStatus.READY
     if not was_ready:
         await notify_car_ready(session, booking)
+    # C7 (buisness.md, "Smart Parking Management"): готовая машина сама
+    # переезжает на свободное место ожидания — тот же условие "уже не
+    # назначено", что и у ручного пути в app/api/bookings.py. Если мест нет
+    # прямо сейчас — не блокирует ничего, parking.py::run_parking_sweep сам
+    # повторит попытку позже.
+    await ensure_waiting_spot(session, booking)
 
 
 async def _resolve_and_commit(session: AsyncSession, booking: Booking) -> bool:

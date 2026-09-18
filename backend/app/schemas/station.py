@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StationStatsRead(BaseModel):
@@ -16,3 +16,16 @@ class StationStatsRead(BaseModel):
     cancelled_count: int
     completion_rate_percent: float | None
     additional_work_conversion_percent: float | None
+
+
+class StationSettingsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    parking_overdue_rate_per_minute: Decimal
+
+
+class StationSettingsUpdate(BaseModel):
+    # C7 (buisness.md): "тариф который можно менять в личном кабинете
+    # станции" — единственная сейчас настраиваемая ставка, поле опционально
+    # на случай, если у StationSettings появятся другие поля позже.
+    parking_overdue_rate_per_minute: Decimal | None = Field(default=None, ge=0)

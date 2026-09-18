@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, DateTime, Enum, Numeric, func
+from sqlalchemy import JSON, DateTime, Enum, Integer, Numeric, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -37,6 +37,13 @@ class BookingArchive(Base):
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[BookingStatus] = mapped_column(Enum(BookingStatus, name="booking_status"))
     total_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    # Financial snapshot is deliberately decomposed.  `total_price` remains
+    # the payable total; these fields make the C7 parking surcharge auditable
+    # and provide direct inputs for a future invoice rather than re-running
+    # mutable tariff logic against a historical visit.
+    service_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    parking_surcharge: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    parking_wait_minutes: Mapped[int] = mapped_column(Integer, default=0)
     services_snapshot: Mapped[list] = mapped_column(JSON)
     # Предложенные доп. работы (B2) — снимком, той же логикой, что и услуги:
     # заявка удаляется из активной таблицы вместе со своими additional_works
