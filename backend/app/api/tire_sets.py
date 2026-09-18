@@ -69,12 +69,12 @@ async def store_tire_set(
     session.add(tire_set)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=409,
             detail="У этой машины уже есть комплект шин на хранении — сначала выдайте его",
-        )
+        ) from exc
     await session.refresh(tire_set)
     return tire_set
 

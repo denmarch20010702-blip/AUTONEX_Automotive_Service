@@ -4,13 +4,13 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from helpers import make_startable_now
 from httpx import AsyncClient
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
 from app.db.session import async_session
 from app.models import AdditionalWork, Booking
-from helpers import make_startable_now
 
 
 def unique_email() -> str:
@@ -84,8 +84,9 @@ async def refund_revenue(booking_id: int, amount) -> None:
     # минус при каждом упавшем прогоне. Теперь вычитаем только если в архиве
     # реально есть ISSUED-запись именно этой заявки — то есть начисление
     # точно произошло.
-    from app.models import STATION_STATS_ROW_ID, BookingArchive, BookingStatus, StationStats
     from sqlalchemy import select, update
+
+    from app.models import STATION_STATS_ROW_ID, BookingArchive, BookingStatus, StationStats
 
     async with async_session() as session:
         archived = (
@@ -110,8 +111,9 @@ async def delete_archive_entry(original_booking_id: int) -> None:
     # issued/cancelled теперь архивируют заявку вместо (или вместе с)
     # удаления — тестовые записи в журнале тоже нужно убирать за собой,
     # иначе BookingArchive будет бесконечно расти при каждом прогоне тестов.
-    from app.models import BookingArchive
     from sqlalchemy import delete as sa_delete
+
+    from app.models import BookingArchive
 
     async with async_session() as session:
         await session.execute(

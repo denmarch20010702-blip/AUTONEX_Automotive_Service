@@ -16,7 +16,10 @@ from sqlalchemy import select
 
 from app.db.session import async_session
 from app.models import Booking, BookingStatus, Post
-from app.services.overdue_bookings import MIN_OVERDUE_GRACE, cancel_bookings_that_would_delay_the_queue
+from app.services.overdue_bookings import (
+    MIN_OVERDUE_GRACE,
+    cancel_bookings_that_would_delay_the_queue,
+)
 
 
 def unique_email() -> str:
@@ -78,8 +81,9 @@ async def insert_booking(
 
 
 async def cleanup(client: AsyncClient, *, booking_ids: list[int], car_id: int, client_id: int, service_id: int) -> None:
-    from app.models import BookingArchive
     from sqlalchemy import delete as sa_delete
+
+    from app.models import BookingArchive
 
     async with async_session() as session:
         for booking_id in booking_ids:

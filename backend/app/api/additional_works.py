@@ -8,6 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+# bookings.py ничего не импортирует из additional_works.py, цикла нет —
+# переиспользуем сам эндпоинт создания заявки напрямую (та же конкурентно-
+# безопасная логика A4: блокировки авто/постов, EXCLUDE-ограничения), а не
+# копируем её для отдельного визита ниже (см. schedule_additional_work).
+from app.api.bookings import create_booking
 from app.db.session import get_session
 from app.models import (
     AdditionalWork,
@@ -31,13 +36,64 @@ from app.services.outbox_email import notify_pending_additional_works
 from app.services.robot_timer import resolve_next_step
 from app.services.slots import get_bookings_overlapping, post_is_free
 
-# bookings.py ничего не импортирует из additional_works.py, цикла нет —
-# переиспользуем сам эндпоинт создания заявки напрямую (та же конкурентно-
-# безопасная логика A4: блокировки авто/постов, EXCLUDE-ограничения), а не
-# копируем её для отдельного визита ниже (см. schedule_additional_work).
-from app.api.bookings import create_booking
-
 router = APIRouter(tags=["additional-works"])
+
+
+async def _advance_booking_if_fully_answered(
+    session: AsyncSession, booking_id: int, excluded_work_ids: set[int]
+) -> dict | None:
+    """UI_description.md п.13: ответ клиента на доп. работу — не просто
+    пометка на AdditionalWork; если это было ПОСЛЕДНЕЕ неотвеченное
+    предложение по заявке, она сама едет дальше, без единого клика со
+    стороны станции. Общая версия проверки/продвижения для трёх мест, где
+    ответ на предложение может это вызвать (respond_additional_work,
+    schedule_additional_work, schedule_additional_works_batch) — раньше
+    каждое из них копировало один и тот же блок кода, и правку в одном месте
+    легко забыть повторить в двух других (что уже произошло однажды: schedule/
+    schedule-batch изначально не продвигали заявку вообще, найдено
+    пользователем на практике 2026-09-17). Возвращает JSON-снимок заявки для
+    `publish("booking_status_changed", ...)`, либо None, если продвигать
+    было нечего.
+
+    `excluded_work_ids` — id только что отвеченных/перенесённых работ, не
+    учитываемых как "неотвеченные" (их статус уже изменён в этой же
+    транзакции, но до commit — autoflush сам применит это перед SELECT, id
+    здесь просто дублирует ту же гарантию явно, как и раньше)."""
+    remaining_pending = (
+        await session.execute(
+            select(AdditionalWork.id)
+            .where(
+                AdditionalWork.booking_id == booking_id,
+                AdditionalWork.status == AdditionalWorkStatus.PENDING,
+                AdditionalWork.id.not_in(excluded_work_ids),
+            )
+            .limit(1)
+        )
+    ).first()
+    if remaining_pending is not None:
+        return None
+
+    booking = (
+        await session.execute(
+            select(Booking)
+            .options(selectinload(Booking.services))
+            .where(Booking.id == booking_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    # UI_description.md п.20/25 (2026-09-14): 'accepted' сознательно не
+    # включаем — машина ещё не на посту вообще, финализировать заявку было
+    # бы неверно; 'on_post' тоже не включаем — там уже идёт другой таймер,
+    # который сам подхватит эту работу, когда закончится (см.
+    # resolve_next_step).
+    if booking is None or booking.status not in (
+        BookingStatus.AWAITING_APPROVAL,
+        BookingStatus.READY,
+    ):
+        return None
+
+    await resolve_next_step(session, booking)
+    return BookingRead.model_validate(booking).model_dump(mode="json")
 
 
 @router.post(
@@ -221,46 +277,12 @@ async def respond_additional_work(
     # ответ даёт клиент в кабинете (B2). Теперь ответ клиента — не просто
     # пометка на AdditionalWork: если это было последнее неотвеченное
     # предложение по заявке и она всё ещё ждёт согласования, заявка сама
-    # едет дальше сама, без единого клика со стороны станции.
-    booking_snapshot: dict | None = None
-    remaining_pending = (
-        await session.execute(
-            select(AdditionalWork.id)
-            .where(
-                AdditionalWork.booking_id == work.booking_id,
-                AdditionalWork.status == AdditionalWorkStatus.PENDING,
-                AdditionalWork.id != work.id,
-            )
-            .limit(1)
-        )
-    ).first()
-    if remaining_pending is None:
-        booking = (
-            await session.execute(
-                select(Booking)
-                .options(selectinload(Booking.services))
-                .where(Booking.id == work.booking_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        # UI_description.md п.20/25 (2026-09-14): раньше сюда заходили только
-        # если заявка в этот момент была РОВНО в 'awaiting_approval' — если
-        # клиент отвечал уже после того, как основная услуга закончилась
-        # (заявка 'ready'), таймер одобренной доп. работы вообще не
-        # запускался, и она считалась выполненной просто по факту ответа.
-        # Добавлено 'ready' к условию. 'accepted' сознательно не включаем —
-        # машина ещё не на посту вообще, финализировать заявку было бы
-        # неверно; 'on_post' тоже не включаем — там уже идёт другой таймер,
-        # который сам подхватит эту работу, когда закончится (см.
-        # resolve_next_step).
-        resolved_booking = booking if booking is not None and booking.status in (
-            BookingStatus.AWAITING_APPROVAL,
-            BookingStatus.READY,
-        ) else None
-        if resolved_booking is not None:
-            await resolve_next_step(session, resolved_booking)
-    else:
-        resolved_booking = None
+    # едет дальше сама, без единого клика со стороны станции (см.
+    # _advance_booking_if_fully_answered выше — общая версия для всех трёх
+    # мест, где ответ на предложение может это вызвать).
+    booking_snapshot = await _advance_booking_if_fully_answered(
+        session, work.booking_id, {work.id}
+    )
 
     # Снимок нужен ДО commit/rollback: после rollback SQLAlchemy "протухает"
     # атрибуты объектов в этой сессии, а обращение к ним ниже потребовало бы
@@ -277,10 +299,8 @@ async def respond_additional_work(
         # проверял конфликт отдельным запросом ПОСЛЕ успешного ответа, а не
         # сам момент продления). Теперь flush — часть защищённого блока.
         await session.flush()
-        if resolved_booking is not None:
-            booking_snapshot = BookingRead.model_validate(resolved_booking).model_dump(mode="json")
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         # Продление occupancy (п.35, см. resolve_next_step) в редком случае
         # может пересечься с чужой заявкой.
         await session.rollback()
@@ -304,8 +324,10 @@ async def respond_additional_work(
                     "service_id": work_service_id,
                     "duration_minutes": work_duration_minutes,
                 },
-            )
-        raise HTTPException(status_code=409, detail="Пост или машина заняты на продлённое время")
+            ) from exc
+        raise HTTPException(
+            status_code=409, detail="Пост или машина заняты на продлённое время"
+        ) from exc
     await session.refresh(work)
     publish("additional_work_responded", AdditionalWorkRead.model_validate(work).model_dump(mode="json"))
     if booking_snapshot is not None:
@@ -381,55 +403,30 @@ async def schedule_additional_work(
     # Найденный пользователем реальный баг (2026-09-17): раньше эта ручка
     # только помечала САМУ доп. работу согласованной и ни разу не проверяла,
     # осталось ли ещё что-то неотвеченное по заявке — в отличие от обычного
-    # "принять/отклонить" (respond_additional_work ниже), где эта проверка
+    # "принять/отклонить" (respond_additional_work выше), где эта проверка
     # есть. Если перенесённая работа была ПОСЛЕДНИМ неотвеченным
     # предложением, заявка навсегда оставалась в 'awaiting_approval' — сама
     # исходная заявка ведь уже ничего не ждёт (эта работа станет отдельным
     # визитом позже), но статус об этом не знал. Тот же приём, что и в
-    # respond_additional_work — сама заявка едет дальше без ручного клика.
-    booking_snapshot: dict | None = None
-    remaining_pending = (
-        await session.execute(
-            select(AdditionalWork.id)
-            .where(
-                AdditionalWork.booking_id == work.booking_id,
-                AdditionalWork.status == AdditionalWorkStatus.PENDING,
-                AdditionalWork.id != work.id,
-            )
-            .limit(1)
-        )
-    ).first()
-    resolved_booking = None
-    if remaining_pending is None:
-        resolved_booking = (
-            await session.execute(
-                select(Booking)
-                .options(selectinload(Booking.services))
-                .where(Booking.id == work.booking_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if resolved_booking is not None and resolved_booking.status not in (
-            BookingStatus.AWAITING_APPROVAL,
-            BookingStatus.READY,
-        ):
-            resolved_booking = None
-        if resolved_booking is not None:
-            await resolve_next_step(session, resolved_booking)
+    # respond_additional_work — сама заявка едет дальше без ручного клика
+    # (см. _advance_booking_if_fully_answered выше).
+    booking_snapshot = await _advance_booking_if_fully_answered(
+        session, work.booking_id, {work.id}
+    )
 
     try:
         await session.flush()
-        if resolved_booking is not None:
-            booking_snapshot = BookingRead.model_validate(resolved_booking).model_dump(mode="json")
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         # Крайне редкий случай (тот же класс, что и в respond_additional_work
         # ниже) — продление occupancy для ДРУГОЙ, уже согласованной ранее
         # доп. работы пересеклось с чужой заявкой. Сама работа, которую мы
         # только что перенесли на отдельный визит, уже создана и никуда не
         # делась — откатывать нечего осмысленного, честный 409.
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Пост или машина заняты на продлённое время")
+        raise HTTPException(
+            status_code=409, detail="Пост или машина заняты на продлённое время"
+        ) from exc
 
     await session.refresh(work)
     publish("additional_work_responded", AdditionalWorkRead.model_validate(work).model_dump(mode="json"))
@@ -513,45 +510,20 @@ async def schedule_additional_works_batch(
     # Тот же фикс, что и в schedule_additional_work выше (найденный
     # пользователем реальный баг, 2026-09-17): если это были ВСЕ
     # неотвеченные предложения по заявке, она должна ехать дальше сама, а
-    # не оставаться в 'awaiting_approval' навсегда.
-    booking_snapshot: dict | None = None
-    remaining_pending = (
-        await session.execute(
-            select(AdditionalWork.id)
-            .where(
-                AdditionalWork.booking_id == booking.id,
-                AdditionalWork.status == AdditionalWorkStatus.PENDING,
-                AdditionalWork.id.not_in(scheduled_ids),
-            )
-            .limit(1)
-        )
-    ).first()
-    resolved_booking = None
-    if remaining_pending is None:
-        resolved_booking = (
-            await session.execute(
-                select(Booking)
-                .options(selectinload(Booking.services))
-                .where(Booking.id == booking.id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if resolved_booking is not None and resolved_booking.status not in (
-            BookingStatus.AWAITING_APPROVAL,
-            BookingStatus.READY,
-        ):
-            resolved_booking = None
-        if resolved_booking is not None:
-            await resolve_next_step(session, resolved_booking)
+    # не оставаться в 'awaiting_approval' навсегда (см.
+    # _advance_booking_if_fully_answered выше).
+    booking_snapshot = await _advance_booking_if_fully_answered(
+        session, booking.id, scheduled_ids
+    )
 
     try:
         await session.flush()
-        if resolved_booking is not None:
-            booking_snapshot = BookingRead.model_validate(resolved_booking).model_dump(mode="json")
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Пост или машина заняты на продлённое время")
+        raise HTTPException(
+            status_code=409, detail="Пост или машина заняты на продлённое время"
+        ) from exc
 
     for w in works:
         await session.refresh(w)

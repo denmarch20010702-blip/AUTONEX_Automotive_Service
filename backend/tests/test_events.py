@@ -17,10 +17,10 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
+from helpers import make_startable_now
 from httpx import AsyncClient
 
 from app.services import events as events_module
-from helpers import make_startable_now
 from tests.test_api_bookings import cleanup, make_client_car, make_service
 
 

@@ -25,9 +25,9 @@ async def create_client(
     session.add(client)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Клиент с таким email уже существует")
+        raise HTTPException(status_code=409, detail="Клиент с таким email уже существует") from exc
     await session.refresh(client)
     return client
 
@@ -65,9 +65,9 @@ async def update_client(
         setattr(client, field, value)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Клиент с таким email уже существует")
+        raise HTTPException(status_code=409, detail="Клиент с таким email уже существует") from exc
     await session.refresh(client)
     return client
 
@@ -183,9 +183,9 @@ async def delete_client(client_id: int, session: AsyncSession = Depends(get_sess
     await session.delete(client)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=409,
             detail="Нельзя удалить клиента — не удалось снять все связанные записи",
-        )
+        ) from exc

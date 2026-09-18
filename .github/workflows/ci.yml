@@ -30,7 +30,10 @@ jobs:
           python-version: "3.12"
       - name: Install backend dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-lock.txt
+      - name: Lint
+        working-directory: backend
+        run: ruff check .
       - name: Apply and validate migrations
         working-directory: backend
         run: |
@@ -47,8 +50,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install and type-check frontend
+      - name: Install frontend dependencies
         working-directory: frontend
-        run: |
-          npm install
-          npm run build
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Type-check and build
+        working-directory: frontend
+        run: npm run build

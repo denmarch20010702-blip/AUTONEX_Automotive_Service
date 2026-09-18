@@ -20,9 +20,9 @@ async def create_service(
     session.add(service)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Услуга с таким названием уже существует")
+        raise HTTPException(status_code=409, detail="Услуга с таким названием уже существует") from exc
     await session.refresh(service)
     return service
 
@@ -61,9 +61,9 @@ async def update_service(
         setattr(service, field, value)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Услуга с таким названием уже существует")
+        raise HTTPException(status_code=409, detail="Услуга с таким названием уже существует") from exc
     await session.refresh(service)
     return service
 

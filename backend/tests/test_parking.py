@@ -9,13 +9,13 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from helpers import make_startable_now
 from httpx import AsyncClient
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
 from app.db.session import async_session
-from app.models import AdditionalWork, Booking, BookingArchive, ParkingSpot, StationSettings
-from helpers import make_startable_now
+from app.models import AdditionalWork, Booking, BookingArchive, ParkingSpot
 
 
 def unique_email() -> str:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-
 from decimal import Decimal
 
 from asyncpg.exceptions import DeadlockDetectedError
@@ -26,7 +25,13 @@ from app.models import (
     StationStats,
 )
 from app.models.booking import booking_services
-from app.schemas.booking import BookingCreate, BookingReschedule, BookingRead, BookingStatusUpdate, SlotOption
+from app.schemas.booking import (
+    BookingCreate,
+    BookingRead,
+    BookingReschedule,
+    BookingStatusUpdate,
+    SlotOption,
+)
 from app.services.ai_diagnostics import run_ai_diagnostic
 from app.services.booking_status import is_transition_allowed
 from app.services.events import publish
@@ -156,16 +161,16 @@ async def create_booking(
     session.add(booking)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Слот уже занят")
+        raise HTTPException(status_code=409, detail="Слот уже занят") from exc
     except DBAPIError as exc:
         await session.rollback()
         # Defense in depth: если блокировка поста выше почему-то не спасла
         # (например, будущий код обойдёт её) — распознаём deadlock именно
         # как проигранную гонку за слот, а не маскируем случайную ошибку БД.
         if isinstance(exc.orig, DeadlockDetectedError):
-            raise HTTPException(status_code=409, detail="Слот уже занят")
+            raise HTTPException(status_code=409, detail="Слот уже занят") from exc
         raise
     # Обычный `refresh()` не подгружает `services` (relationship "протухает"
     # после commit) — без явного eager-load ниже Pydantic упал бы на попытке
@@ -247,13 +252,13 @@ async def reschedule_booking(
     booking.post_id = free_post.id
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Слот уже занят")
+        raise HTTPException(status_code=409, detail="Слот уже занят") from exc
     except DBAPIError as exc:
         await session.rollback()
         if isinstance(exc.orig, DeadlockDetectedError):
-            raise HTTPException(status_code=409, detail="Слот уже занят")
+            raise HTTPException(status_code=409, detail="Слот уже занят") from exc
         raise
 
     booking = (
@@ -575,12 +580,14 @@ async def update_booking_status(
             await session.delete(booking)
 
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         # Расширение `end_at` выше (п.35) в редком случае может пересечься
         # с чужой заявкой, которая успела встать в промежуток раньше —
         # честный 409 вместо 500, тот же принцип, что и в create_booking.
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Пост или машина заняты на продлённое время")
+        raise HTTPException(
+            status_code=409, detail="Пост или машина заняты на продлённое время"
+        ) from exc
 
     publish("booking_status_changed", snapshot)
     if completing:
@@ -659,7 +666,7 @@ async def confirm_parked(
             "no_free_spot": "Свободных мест на парковке сейчас нет — попробуйте чуть позже",
         }.get(str(exc), "Не удалось подтвердить приезд")
         status_code = 404 if str(exc) == "booking_not_found" else 409
-        raise HTTPException(status_code=status_code, detail=detail)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     snapshot = BookingRead.model_validate(booking).model_dump(mode="json")
     publish("booking_status_changed", snapshot)
     return BookingRead(**snapshot)

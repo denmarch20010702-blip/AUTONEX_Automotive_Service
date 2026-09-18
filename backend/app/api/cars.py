@@ -80,9 +80,9 @@ async def delete_car(car_id: int, session: AsyncSession = Depends(get_session)) 
     await session.delete(car)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=409,
             detail="Нельзя удалить автомобиль — на него есть заявки или комплект шин на хранении",
-        )
+        ) from exc

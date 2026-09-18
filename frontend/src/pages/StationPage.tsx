@@ -223,7 +223,6 @@ export function StationPage() {
       // равно прилетело — заодно освежаем и его.
       reloadServices();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadTick, reloadBookings, reloadCars, reloadStats, reloadArchive, reloadServices]);
 
   const carLabel = (carId: number): string => {

@@ -4,7 +4,6 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # UI_description.md п.24/30 (2026-09-14): реальные найденные баги — можно
 # было сохранить услугу с пустым названием при редактировании (create уже
 # требовал непустое), и слишком длинное название расползалось за пределы

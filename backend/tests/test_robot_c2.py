@@ -14,7 +14,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
 from app.db.session import async_session
-from app.models import AdditionalWork, Booking, BookingArchive, Client, OutboxEmail
+from app.models import AdditionalWork, Booking, BookingArchive, OutboxEmail
 
 
 def unique_email() -> str:

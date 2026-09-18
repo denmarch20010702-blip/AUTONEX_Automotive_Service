@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from helpers import make_startable_now
 from httpx import AsyncClient
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select, update
@@ -28,7 +29,6 @@ from app.services.ai_diagnostics import (
     DiagnosticSuggestion,
     generate_diagnostic_suggestions,
 )
-from helpers import make_startable_now
 
 
 def unique_email() -> str:

@@ -2,10 +2,9 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from helpers import make_startable_now
 from httpx import AsyncClient
 from sqlalchemy import select
-
-from helpers import make_startable_now
 
 
 def unique_email() -> str:

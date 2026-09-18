@@ -208,17 +208,41 @@ async def run_parking_sweep(session: AsyncSession) -> None:
             await session.rollback()
             continue
 
-    unparked = (
+    # Найдено при код-ревью (2026-09-18): раньше все подходящие заявки
+    # блокировались ОДНИМ запросом с `.with_for_update()`, а затем цикл
+    # коммитил после КАЖДОЙ успешно поставленной на место заявки — первый
+    # `commit()` завершает транзакцию и снимает блокировку СРАЗУ СО ВСЕХ
+    # заявок, а не только с обработанной. Все ещё не обработанные заявки в
+    # остатке списка после этого больше не защищены блокировкой: если между
+    # первым commit'ом и следующей итерацией кто-то параллельно отменит
+    # (и удалит) одну из них, `assign_parking_spot` тихо назначит место
+    # объекту, которого в БД уже нет — `commit()` на несуществующей строке не
+    # упадёт с ошибкой, просто ничего не изменит, и место останется
+    # "потрачено" только в памяти этого прохода. Теперь блокируем и
+    # перепроверяем условие заново под свежей блокировкой на каждой
+    # заявке отдельно — тот же приём, что и в цикле `due` выше.
+    unparked_ids = (
         await session.execute(
-            select(Booking)
-            .where(
+            select(Booking.id).where(
                 Booking.status.in_([BookingStatus.READY, BookingStatus.AWAITING_APPROVAL]),
                 Booking.parking_spot_id.is_(None),
             )
-            .with_for_update()
         )
     ).scalars().all()
-    for booking in unparked:
+    for booking_id in unparked_ids:
+        booking = (
+            await session.execute(
+                select(Booking).where(Booking.id == booking_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if (
+            booking is None
+            or booking.status not in (BookingStatus.READY, BookingStatus.AWAITING_APPROVAL)
+            or booking.parking_spot_id is not None
+        ):
+            # Заявку успели отменить/удалить, продвинуть дальше или она уже
+            # получила место где-то ещё, пока мы её ждали — ничего не делаем.
+            continue
         if await assign_parking_spot(session, booking):
             await session.commit()
 

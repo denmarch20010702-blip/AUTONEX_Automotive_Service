@@ -7,9 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from httpx import AsyncClient
-
 from helpers import make_startable_now
+from httpx import AsyncClient
 
 TIRE_VISIT_SERVICE_NAME = "Получить/сдать шины"
 SEASONAL_TIRE_SWAP_SERVICE_NAME = "Сезонная замена шин"

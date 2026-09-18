@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Index, Table, func
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, Index, Table, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -32,6 +32,19 @@ class Booking(Base):
         # Ускоряет ровно тот запрос, вокруг которого построена вся логика A4:
         # "какие заявки уже есть на этом посту в этом интервале".
         Index("ix_bookings_post_start", "post_id", "start_at"),
+        # Найдено при код-ревью (2026-09-18): в отличие от постов (защищены
+        # `EXCLUDE USING gist` по диапазону времени), единственной защитой от
+        # присвоения одного парковочного места двум заявкам одновременно
+        # была дисциплина `FOR UPDATE` внутри `assign_parking_spot` — конвенция
+        # кода, а не гарантия на уровне БД. Место занято ровно одной активной
+        # заявкой в любой момент (не диапазон времени, как у постов), поэтому
+        # достаточен простой частичный unique-индекс, не gist.
+        Index(
+            "uq_bookings_active_parking_spot_id",
+            "parking_spot_id",
+            unique=True,
+            postgresql_where=text("parking_spot_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

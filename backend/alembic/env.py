@@ -1,9 +1,9 @@
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from app import models  # noqa: F401 — регистрирует модели в Base.metadata
 from app.core.config import settings
 from app.db.session import Base
