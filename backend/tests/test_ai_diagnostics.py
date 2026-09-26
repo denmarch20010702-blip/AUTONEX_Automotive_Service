@@ -128,13 +128,17 @@ async def test_no_suggestions_below_mileage_threshold(client: AsyncClient) -> No
 
 @pytest.mark.asyncio
 async def test_no_suggestions_without_matching_catalog_keyword(client: AsyncClient) -> None:
-    # Пробег превышен, но в каталоге нет ничего из класса "ТО" — предлагать
-    # нечего, это не общая рекомендация "на глаз".
+    # Пробег превышен, но у ЭТОЙ услуги нет ничего из класса "ТО" —
+    # предлагать её не должны (в каталоге в целом могут быть и другие,
+    # подходящие услуги — не проверяем каталог целиком, см. 2026-09-19: до
+    # этого каталог на свежей БД был пуст, теперь миграция сеет демо-услуги
+    # из примеров задания, включая одну "Плановое ТО").
     client_id, car_id = await make_client_car(client, mileage=50_000)
     service_id = await make_service(client, "Мойка кузова")
     await set_service_history(car_id, mileage_at_last_service=0)
     try:
-        assert await evaluate(client_id, car_id) == []
+        suggested_ids = {s.service_id for s in await evaluate(client_id, car_id)}
+        assert service_id not in suggested_ids
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id, service_ids=[service_id])
 
@@ -142,12 +146,14 @@ async def test_no_suggestions_without_matching_catalog_keyword(client: AsyncClie
 @pytest.mark.asyncio
 async def test_keyword_matches_word_boundary_not_substring_inside_avto(client: AsyncClient) -> None:
     # Найденный при реализации риск: голый substring "то" совпал бы внутри
-    # "авто-..." — проверяем, что матчинг именно по границе слова.
+    # "авто-..." — проверяем, что матчинг именно по границе слова (не что
+    # каталог целиком пуст — см. 2026-09-19).
     client_id, car_id = await make_client_car(client, mileage=MILEAGE_THRESHOLD_KM + 1_000)
     service_id = await make_service(client, "Автополировка кузова")
     await set_service_history(car_id, mileage_at_last_service=0)
     try:
-        assert await evaluate(client_id, car_id) == []
+        suggested_ids = {s.service_id for s in await evaluate(client_id, car_id)}
+        assert service_id not in suggested_ids
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id, service_ids=[service_id])
 
@@ -160,15 +166,18 @@ async def test_suggests_single_matching_catalog_service_above_threshold(client: 
     try:
         car = await get_car(car_id)
         suggestions = await evaluate(client_id, car_id)
-        assert len(suggestions) == 1
-        assert suggestions[0].service_id == service_id
-        assert 0 < suggestions[0].confidence <= 1
+        # Не `len(suggestions) == 1` — каталог не изолирован от других ТО-
+        # услуг (в т.ч. посеянных миграцией, см. 2026-09-19); проверяем, что
+        # СВОЯ услуга среди предложенных и её данные корректны, не то, что
+        # она единственная.
+        own = next(s for s in suggestions if s.service_id == service_id)
+        assert 0 < own.confidence <= 1
         # Найдено пользователем (2026-09-16): причина не должна повторять
         # марку/модель машины на каждой строке (раздувает панель доп. работ
         # на станции при нескольких предложениях сразу) — это уже видно из
         # контекста самой заявки на странице.
-        assert car.make not in suggestions[0].reason and car.model not in suggestions[0].reason
-        assert "Плановое ТО" in suggestions[0].reason
+        assert car.make not in own.reason and car.model not in own.reason
+        assert "Плановое ТО" in own.reason
     finally:
         await cleanup(client, car_id=car_id, client_id=client_id, service_ids=[service_id])
 
@@ -185,7 +194,10 @@ async def test_suggests_all_matching_catalog_services_not_just_one(client: Async
     try:
         suggestions = await evaluate(client_id, car_id)
         suggested_ids = {s.service_id for s in suggestions}
-        assert suggested_ids == {service_a, service_b}
+        # Подмножество, не точное равенство — каталог не изолирован от
+        # других ТО-услуг (2026-09-19). Важно здесь именно то, что ОБЕ
+        # созданные подходящие услуги пришли разом, а не только первая.
+        assert {service_a, service_b} <= suggested_ids
         assert unrelated not in suggested_ids
     finally:
         await cleanup(
@@ -268,15 +280,17 @@ async def test_ai_diagnostic_proposes_additional_work_on_arrival(client: AsyncCl
         resp = await client.post(f"/bookings/{booking_id}/status", json={"status": "on_post"})
         assert resp.status_code == 200
 
+        # Не `len(works) == 1` — каталог не изолирован от других ТО-услуг
+        # (в т.ч. посеянных миграцией, см. 2026-09-19); важно, что СВОЯ
+        # услуга среди предложенных, а не что она единственная.
         works = (await client.get(f"/bookings/{booking_id}/additional-works")).json()
-        assert len(works) == 1
-        assert works[0]["proposed_by"] == "ai"
-        assert works[0]["status"] == "pending"
-        assert works[0]["service_id"] == extra_service_id
+        own = next(w for w in works if w["service_id"] == extra_service_id)
+        assert own["proposed_by"] == "ai"
+        assert own["status"] == "pending"
         # C5 (2026-09-16): причина/уверенность сохранены — но только для
         # оверсайта станции, не упоминаются в письме клиенту (см. ниже).
-        assert works[0]["ai_confidence"] is not None
-        assert works[0]["ai_reason"]
+        assert own["ai_confidence"] is not None
+        assert own["ai_reason"]
 
         async with async_session() as session:
             client_row = await session.get(Client, client_id)
@@ -335,7 +349,8 @@ async def test_ai_diagnostic_proposes_multiple_works_on_arrival(client: AsyncCli
 
         works = (await client.get(f"/bookings/{booking_id}/additional-works")).json()
         proposed_service_ids = {w["service_id"] for w in works if w["proposed_by"] == "ai"}
-        assert proposed_service_ids == {extra_a, extra_b}
+        # Подмножество, не точное равенство — та же причина, что и выше.
+        assert {extra_a, extra_b} <= proposed_service_ids
 
         # C5 (2026-09-16, найдено пользователем на практике): раньше на КАЖДУЮ
         # предложенную услугу уходило своё письмо — при двух совпадениях сразу
